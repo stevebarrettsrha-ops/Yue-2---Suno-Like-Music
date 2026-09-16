@@ -893,7 +893,7 @@ function renderTracks() {
     row.className = "trow" + (S.playing === t.id ? " active" : "");
     row.innerHTML =
       '<div class="art"><canvas width="88" height="88"></canvas>' +
-      '<span class="dur">' + fmtTime(t.duration || 0) + "</span>" +
+      '<span class="dur">' + fmtTime(t.seconds || t.duration || 0) + "</span>" +
       '<span class="play"><svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg></span></div>' +
       '<div class="tmeta"><div class="t"><span class="n">' + esc(t.title) + "</span>" +
       '<span class="vbadge">' + versionBadge(t) + "</span></div>" +
@@ -1056,6 +1056,20 @@ function wirePlayer() {
     '<path d="M8 5v14l11-7z"/>'; renderTracks(); });
   a.addEventListener("ended", () => { if (S.repeat) { a.currentTime = 0; a.play(); }
     else step(1); });
+  // The decoded file is the last word on how long a song is. If the server
+  // could not read it (no ffprobe, mp3), save what the browser found so every
+  // card shows the real length from now on.
+  a.addEventListener("loadedmetadata", () => {
+    const t = S.tracks.find((x) => x.id === S.playing);
+    if (!t || !isFinite(a.duration) || a.duration <= 0) return;
+    const real = Math.round(a.duration * 100) / 100;
+    if (Math.abs((t.seconds || 0) - real) < 0.5) return;
+    t.seconds = real;
+    renderTracks();   // the only view that shows a length
+    fetch("/api/track/" + t.id, { method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ seconds: real }) }).catch(() => {});
+  });
   a.addEventListener("timeupdate", () => {
     $("tCur").textContent = fmtTime(a.currentTime);
     $("tDur").textContent = fmtTime(a.duration);

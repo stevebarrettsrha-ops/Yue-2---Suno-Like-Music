@@ -9,6 +9,8 @@ from __future__ import annotations
 import json
 import mimetypes
 import os
+import shutil
+import subprocess
 import threading
 import time
 import uuid
@@ -64,6 +66,83 @@ def add_track(track: dict) -> None:
     items = read_library()
     items.insert(0, track)
     write_library(items)
+
+
+def audio_duration(path: Path) -> float | None:
+    """How long the finished song actually is, in seconds.
+
+    YuE2 stops when the song ends, so a track is usually shorter than the
+    max_duration it was asked for — the requested value is a ceiling and must
+    never be shown as the length. Read it out of the file instead.
+
+    flac and ogg/opus are parsed here because they need no decoder; anything
+    else falls back to ffprobe, and if that is missing the front end backfills
+    the real duration the first time the track is played.
+    """
+    for reader in (_duration_flac, _duration_opus, _duration_ffprobe):
+        try:
+            seconds = reader(path)
+        except (OSError, ValueError, IndexError, ZeroDivisionError,
+                subprocess.SubprocessError):
+            continue
+        if seconds and seconds > 0:
+            return round(seconds, 2)
+    return None
+
+
+def _duration_flac(path: Path) -> float | None:
+    if path.suffix.lower() != ".flac":
+        return None
+    with open(path, "rb") as fh:
+        if fh.read(4) != b"fLaC":
+            return None
+        fh.seek(8)  # past the STREAMINFO block header and the block sizes
+        head = fh.read(18)
+    if len(head) < 18:
+        return None
+    # 20 bits sample rate, 3 channels, 5 bits per sample, 36 bits total samples
+    packed = int.from_bytes(head[10:18], "big")
+    rate, total = packed >> 44, packed & ((1 << 36) - 1)
+    return total / rate if rate and total else None
+
+
+def _duration_opus(path: Path) -> float | None:
+    """Ogg Opus only.
+
+    Opus fixes its granule clock at 48 kHz whatever the source rate. An .ogg
+    holding Vorbis counts granules at the stream's own rate instead, so reading
+    one as Opus under-reports every length — bail out unless OpusHead is there
+    and let ffprobe handle the rest.
+    """
+    if path.suffix.lower() not in (".opus", ".ogg", ".oga"):
+        return None
+    with open(path, "rb") as fh:
+        head = fh.read(4096)
+        fh.seek(max(0, path.stat().st_size - 65536))
+        tail = fh.read()
+    start = head.find(b"OpusHead")
+    if start < 0:
+        return None
+    pre_skip = int.from_bytes(head[start + 10:start + 12], "little")
+    page = tail.rfind(b"OggS")
+    if page < 0 or page + 14 > len(tail):
+        return None
+    granule = int.from_bytes(tail[page + 6:page + 14], "little")
+    if granule in (0, 0xFFFFFFFFFFFFFFFF):
+        return None
+    return max(0, granule - pre_skip) / 48000.0
+
+
+def _duration_ffprobe(path: Path) -> float | None:
+    ffprobe = shutil.which("ffprobe")
+    if not ffprobe:
+        return None
+    out = subprocess.run(
+        [ffprobe, "-v", "error", "-show_entries", "format=duration",
+         "-of", "default=noprint_wrappers=1:nokey=1", str(path)],
+        capture_output=True, text=True, timeout=20,
+    ).stdout.strip()
+    return float(out) if out else None
 
 
 def title_from(style: str, lyrics: str) -> str:
@@ -188,7 +267,11 @@ def run_job(job_id: str, params: dict) -> None:
             "lyrics": params.get("lyrics", ""),
             "instrumental": bool(params.get("instrumental")),
             "seed": built["seed"],
+            # duration is what was asked for and is what "reuse settings" loads
+            # back into the slider; seconds is how long the song actually came
+            # out, and is what gets shown.
             "duration": params.get("duration"),
+            "seconds": audio_duration(dest),
             "mode": params.get("mode"),
             "steps": params.get("steps"),
             "cfg": params.get("cfg"),
@@ -393,6 +476,15 @@ def api_rename(track_id: str):
         if item["id"] == track_id:
             if body.get("title"):
                 item["title"] = body["title"][:120]
+            if body.get("seconds") is not None:
+                # Sent by the player once the browser has decoded the file, for
+                # formats audio_duration() could not read without ffprobe.
+                try:
+                    seconds = round(float(body["seconds"]), 2)
+                except (TypeError, ValueError):
+                    seconds = 0.0
+                if 0 < seconds < 7200:
+                    item["seconds"] = seconds
             write_library(items)
             return jsonify({"ok": True, "track": item})
     return jsonify({"error": "Track not found."}), 404
