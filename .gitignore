@@ -1,0 +1,12 @@
+# YuE Studio runtime state
+data/
+ComfyUI/
+comfy-venv/
+*.part
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+
+.DS_Store

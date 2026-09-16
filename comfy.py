@@ -82,10 +82,36 @@ class ComfyClient:
                   "restart it from Settings."
             )
 
+    @staticmethod
+    def combo_options(spec) -> list[str]:
+        """Read a dropdown's choices out of an /object_info input spec.
+
+        ComfyUI writes combos two ways depending on how the node was declared:
+
+            V1 (nodes.py)     [["a.safetensors", "b.safetensors"], {...}]
+            V3 (comfy_api)    ["COMBO", {"options": ["a.safetensors", ...]}]
+
+        Core loaders are still V1 while every YuE2 and audio node is V3, so both
+        shapes turn up in the same graph. Reading only the first would silently
+        report "no models installed" for half the nodes.
+        """
+        if not isinstance(spec, (list, tuple)) or not spec:
+            return []
+        if isinstance(spec[0], (list, tuple)):
+            options = spec[0]
+        else:
+            opts = spec[1] if len(spec) > 1 and isinstance(spec[1], dict) else {}
+            options = opts.get("options")
+        if not isinstance(options, (list, tuple)):
+            return []
+        # A dynamic combo also keys off "options", but its entries are dicts;
+        # those are not plain choices and belong to _dynamic_options().
+        return [str(o) for o in options if isinstance(o, (str, int, float))]
+
     def checkpoints(self) -> list[str]:
         try:
-            spec = self.node_inputs("CheckpointLoaderSimple").get("ckpt_name")
-            return list(spec[0]) if spec and isinstance(spec[0], list) else []
+            return self.combo_options(
+                self.node_inputs("CheckpointLoaderSimple").get("ckpt_name"))
         except Exception:
             return []
 
@@ -107,10 +133,54 @@ class ComfyClient:
 
     def audio_encoders(self) -> list[str]:
         try:
-            spec = self.node_inputs("AudioEncoderLoader").get("audio_encoder_name")
-            return list(spec[0]) if spec and isinstance(spec[0], list) else []
+            return self.combo_options(
+                self.node_inputs("AudioEncoderLoader").get("audio_encoder_name"))
         except Exception:
             return []
+
+    def samplers(self) -> tuple[list[str], list[str]]:
+        spec = self.node_inputs("KSampler")
+        return (self.combo_options(spec.get("sampler_name")),
+                self.combo_options(spec.get("scheduler")))
+
+    # ------------------------------------------------------------------ #
+    # SaveAudioAdvanced.format is a dynamic combo: choosing "mp3" or "opus"
+    # makes ComfyUI expect a sibling "quality" input that does not exist for
+    # "flac". Both the option list and that extra input live inside the spec.
+    # ------------------------------------------------------------------ #
+    @staticmethod
+    def _dynamic_options(spec) -> list[dict]:
+        if not isinstance(spec, (list, tuple)) or len(spec) < 2:
+            return []
+        options = (spec[1] or {}).get("options")
+        return [o for o in options if isinstance(o, dict)] if isinstance(options, list) else []
+
+    def save_formats(self) -> list[str]:
+        try:
+            spec = self.node_inputs("SaveAudioAdvanced").get("format")
+        except ComfyError:
+            return ["flac"]
+        keys = [str(o["key"]) for o in self._dynamic_options(spec) if o.get("key")]
+        return keys or self.combo_options(spec) or ["flac"]
+
+    def _format_extras(self, spec, chosen: str) -> dict:
+        """Defaults for the inputs that the chosen format pulls in (quality)."""
+        extras: dict = {}
+        for option in self._dynamic_options(spec):
+            if str(option.get("key")) != chosen:
+                continue
+            nested = option.get("inputs") or {}
+            for group in ("required", "optional"):
+                for name, definition in (nested.get(group) or {}).items():
+                    opts = definition[1] if (isinstance(definition, (list, tuple))
+                                             and len(definition) > 1
+                                             and isinstance(definition[1], dict)) else {}
+                    choices = self.combo_options(definition)
+                    if "default" in opts:
+                        extras[name] = opts["default"]
+                    elif choices:
+                        extras[name] = choices[0]
+        return extras
 
     # ------------------------------------------------------------------ #
     # graph construction
@@ -153,11 +223,9 @@ class ComfyClient:
             kind, opts = definition[0], (definition[1] if len(definition) > 1 else {})
             if not isinstance(opts, dict):
                 opts = {}
-            if isinstance(kind, list):           # enum
-                if "default" in opts:
-                    inputs[name] = opts["default"]
-                elif kind:
-                    inputs[name] = kind[0]
+            choices = self.combo_options(definition)
+            if choices:                          # enum, either schema version
+                inputs[name] = opts.get("default", choices[0])
             elif kind in ("INT", "FLOAT", "STRING", "BOOLEAN"):
                 if "default" in opts:
                     inputs[name] = opts["default"]
@@ -223,7 +291,8 @@ class ComfyClient:
                            "required": True},
                 "seed": {"names": ["seed", "noise_seed"], "value": seed},
                 "mode": {"names": ["mode", "abc_mode", "plan_mode"], "value": mode},
-                "max_tokens": {"names": ["max_tokens", "max_new_tokens"],
+                "max_tokens": {"names": ["max_abc_tokens", "max_tokens",
+                                         "max_new_tokens"],
                                "value": int(p.get("abc_tokens") or 8192)},
             })
             abc_link = ["23", 0]
@@ -283,11 +352,22 @@ class ComfyClient:
                                         "value": int(p.get("overlap") or 128)}
         g["17"] = self._node(decode_class, decode_wanted)
 
+        save_spec = self.node_inputs("SaveAudioAdvanced")
+        fmt = p.get("format") or "flac"
+        if fmt not in self.save_formats():
+            fmt = "flac"
         g["10"] = self._node("SaveAudioAdvanced", {
             "audio": {"names": ["audio"], "value": ["17", 0], "required": True},
             "prefix": {"names": ["filename_prefix"], "value": "audio/YuEStudio"},
-            "format": {"names": ["format"], "value": p.get("format") or "flac"},
+            "format": {"names": ["format"], "value": fmt},
         })
+        # mp3 and opus bring a sibling "quality" input along with them; flac
+        # brings none. It lives inside the format option rather than at the top
+        # level of the schema, so _node() cannot see it — set it here.
+        extras = self._format_extras(save_spec.get("format"), fmt)
+        if "quality" in extras and p.get("quality"):
+            extras["quality"] = p["quality"]
+        g["10"]["inputs"].update(extras)
 
         return {"prompt": g, "seed": seed, "ckpt": ckpt,
                 "abc": bool(abc_link), "decode": decode_class}

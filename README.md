@@ -107,6 +107,9 @@ Leave lyrics empty, or switch Instrumental on, for a vocal-free track.
   `sgm_uniform` matches the reference workflow.
 - *Seed* — leave blank for random, or fix it to re-roll a song with one change.
 - *Tiled decode* — leave on unless you have plenty of VRAM; off is faster.
+- *Format* — `flac` keeps everything and needs nothing extra. `mp3` and `opus`
+  are offered when your ComfyUI build supports them, and both need ffmpeg —
+  the Engine page installs it.
 
 **Cover from audio** uploads a reference song, transcribes its melody to ABC
 notation with SheetSage2, then re-sings it with your style and lyrics. The
@@ -164,11 +167,15 @@ at the bottom of the setup panel, and the ComfyUI window itself.
 ## Layout
 
 ```
+run.sh         Launcher — macOS / Linux
+run.bat        Launcher — Windows
 server.py      Flask API — setup, jobs, library, audio streaming
 bootstrap.py   Python/ComfyUI discovery, installs, model downloads, process control
+manager.py     Background tasks — dependency installs and HuggingFace downloads
 comfy.py       Builds the YuE2 graph from ComfyUI's /object_info schema, queues it
 web/index.html The interface — one file, no build step
-data/          config.json, library.json, tracks/
+assets/        yue2_full_reference.json, the workflow the graph mirrors
+data/          config.json, library.json, tracks/ (created on first run)
 ```
 
 Port: set `YUE_STUDIO_PORT` to move off 7788. Set `YUE_STUDIO_NO_BROWSER=1` to
