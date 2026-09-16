@@ -155,6 +155,14 @@ def title_from(style: str, lyrics: str) -> str:
     return " ".join(words[:5]).title() or "Untitled"
 
 
+def track_title(params: dict) -> str:
+    """What to call this song. An instrumental never sings its lyrics box, so
+    naming it after that text would describe a song nobody hears."""
+    return params.get("title") or title_from(
+        params.get("style", ""),
+        "" if params.get("instrumental") else params.get("lyrics", ""))
+
+
 # --------------------------------------------------------------------------- #
 # progress over the ComfyUI websocket (optional dependency)
 # --------------------------------------------------------------------------- #
@@ -212,11 +220,15 @@ def run_job(job_id: str, params: dict) -> None:
         last_stage = ""
         while True:
             time.sleep(1.5)
+            # Read the flag under the lock and act outside it: jobs_lock is a
+            # plain Lock, so calling set_state() while holding it would wedge
+            # this thread and every /api/jobs request behind it.
             with jobs_lock:
-                if jobs[job_id].get("cancelled"):
-                    client.interrupt()
-                    set_state(status="cancelled", stage="Cancelled")
-                    return
+                cancelled = bool(jobs[job_id].get("cancelled"))
+            if cancelled:
+                client.stop(prompt_id)
+                set_state(status="cancelled", stage="Cancelled")
+                return
 
             err = client.failed(prompt_id)
             if err:
@@ -261,8 +273,7 @@ def run_job(job_id: str, params: dict) -> None:
 
         track = {
             "id": track_id,
-            "title": params.get("title") or title_from(params.get("style", ""),
-                                                       params.get("lyrics", "")),
+            "title": track_title(params),
             "style": params.get("style", ""),
             "lyrics": params.get("lyrics", ""),
             "instrumental": bool(params.get("instrumental")),
@@ -375,6 +386,12 @@ def api_comfy_start():
     if comfy_online(cfg["comfy_url"]):
         return jsonify({"ok": True, "already": True})
     if not cfg.get("comfy_dir") or not cfg.get("python"):
+        if cfg.get("comfy_dir") and not cfg.get("managed", True):
+            return jsonify({"ok": False,
+                            "error": "YuE Studio does not know which Python "
+                                     "that ComfyUI runs on, so it will not "
+                                     "start it. Start ComfyUI yourself, then "
+                                     "press Recheck."}), 400
         return jsonify({"ok": False,
                         "error": "Run setup first."}), 400
     port = int(cfg["comfy_url"].rsplit(":", 1)[-1])
@@ -408,14 +425,17 @@ def api_generate():
 
     count = max(1, min(int(params.get("count") or 1), 4))
     created = []
+    with jobs_lock:
+        stale = [k for k, j in jobs.items()
+                 if j["status"] != "running" and time.time() - j["created"] > 3600]
+        for k in stale:
+            jobs.pop(k, None)
     for _ in range(count):
         job_id = uuid.uuid4().hex[:12]
         with jobs_lock:
             jobs[job_id] = {"id": job_id, "status": "running", "pct": 0,
                             "stage": "Starting", "created": time.time(),
-                            "title": params.get("title") or
-                            title_from(params.get("style", ""),
-                                       params.get("lyrics", "")),
+                            "title": track_title(params),
                             "style": params.get("style", "")}
         threading.Thread(target=run_job, args=(job_id, dict(params)),
                          daemon=True).start()

@@ -143,6 +143,24 @@ class ComfyClient:
         return (self.combo_options(spec.get("sampler_name")),
                 self.combo_options(spec.get("scheduler")))
 
+    def pick_option(self, spec, *preferred: str) -> str | None:
+        """The first preferred choice this schema actually offers.
+
+        Sampler and scheduler lists differ between ComfyUI builds. Sending a
+        name the node has never heard of is rejected at queue time, so fall
+        back to the input's own default rather than insisting on ours.
+        """
+        options = self.combo_options(spec)
+        for want in preferred:
+            if want and want in options:
+                return want
+        if not options:
+            return next((w for w in preferred if w), None)
+        opts = (spec[1] if isinstance(spec, (list, tuple)) and len(spec) > 1
+                and isinstance(spec[1], dict) else {})
+        default = opts.get("default")
+        return default if default in options else options[0]
+
     # ------------------------------------------------------------------ #
     # SaveAudioAdvanced.format is a dynamic combo: choosing "mp3" or "opus"
     # makes ComfyUI expect a sibling "quality" input that does not exist for
@@ -357,6 +375,7 @@ class ComfyClient:
             "batch": {"names": ["batch_size"], "value": 1},
         })
 
+        ks_spec = self.node_inputs("KSampler")
         g["8"] = self._node("KSampler", {
             "model": {"names": ["model"], "value": ["15", 0], "required": True},
             "positive": {"names": ["positive"], "value": ["22", 0], "required": True},
@@ -365,9 +384,13 @@ class ComfyClient:
             "seed": {"names": ["seed", "noise_seed"], "value": seed},
             "steps": {"names": ["steps"], "value": int(p.get("steps") or 32)},
             "cfg": {"names": ["cfg"], "value": float(p.get("cfg") or 1.0)},
-            "sampler": {"names": ["sampler_name"], "value": p.get("sampler") or "dpm_2"},
+            "sampler": {"names": ["sampler_name"],
+                        "value": self.pick_option(ks_spec.get("sampler_name"),
+                                                  p.get("sampler") or "", "dpm_2")},
             "scheduler": {"names": ["scheduler"],
-                          "value": p.get("scheduler") or "sgm_uniform"},
+                          "value": self.pick_option(ks_spec.get("scheduler"),
+                                                    p.get("scheduler") or "",
+                                                    "sgm_uniform")},
             "denoise": {"names": ["denoise"], "value": 1.0},
         })
 
@@ -427,6 +450,27 @@ class ComfyClient:
         except Exception:
             pass
 
+    def is_running(self, prompt_id: str) -> bool:
+        entries = self.queue_state().get("queue_running") or []
+        return any(len(e) > 1 and e[1] == prompt_id for e in entries)
+
+    def stop(self, prompt_id: str) -> None:
+        """Take one prompt out of the queue, whatever state it is in.
+
+        /interrupt stops whatever is executing right now and nothing else, so
+        sending it for a prompt that is still waiting would kill somebody
+        else's song and leave this one queued. Dropping it from the pending
+        queue by id is a no-op if it has already started, so do that first and
+        only interrupt if this really is the prompt on the bench.
+        """
+        try:
+            requests.post(f"{self.url}/queue", json={"delete": [prompt_id]},
+                          timeout=10)
+        except Exception:
+            pass
+        if self.is_running(prompt_id):
+            self.interrupt()
+
     def history(self, prompt_id: str) -> dict:
         r = requests.get(f"{self.url}/history/{prompt_id}", timeout=20)
         r.raise_for_status()
@@ -456,6 +500,8 @@ class ComfyClient:
                 if kind == "execution_error":
                     return (f"{data.get('node_type')}: "
                             f"{data.get('exception_message')}")
+                if kind == "execution_interrupted":
+                    return "Stopped in ComfyUI."
             return "Generation failed inside ComfyUI."
         return None
 
