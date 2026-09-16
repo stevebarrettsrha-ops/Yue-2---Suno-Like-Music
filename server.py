@@ -248,12 +248,8 @@ def api_status():
             payload["checkpoints"] = client.checkpoints()
             payload["has_cover_model"] = bool(
                 [e for e in client.audio_encoders() if "sheetsage" in e.lower()])
-            sampler = client.node_inputs("KSampler")
-            payload["samplers"] = list(sampler["sampler_name"][0])
-            payload["schedulers"] = list(sampler["scheduler"][0])
-            fmt = client.node_inputs("SaveAudioAdvanced").get("format")
-            payload["formats"] = list(fmt[0]) if fmt and isinstance(fmt[0], list) \
-                else ["flac"]
+            payload["samplers"], payload["schedulers"] = client.samplers()
+            payload["formats"] = client.save_formats()
         except Exception as exc:  # ComfyUI up but too old / still loading
             payload["schema_error"] = str(exc)
     return jsonify(payload)

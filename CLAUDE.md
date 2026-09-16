@@ -7,29 +7,38 @@
    from `/object_info` and matches input names through candidate lists. Node
    inputs get renamed between ComfyUI releases; a schema read turns that into a
    clear error instead of a silent wrong value.
-3. **Python detection is by execution, never `where python` / PATH lookup.**
+3. **Never read a dropdown's choices as `spec[0]`.** `/object_info` writes
+   combos two ways in the same graph — `[["a","b"], {…}]` for V1 nodes
+   (`nodes.py`: CheckpointLoaderSimple, KSampler) and
+   `["COMBO", {"options": […]}]` for V3 ones (`comfy_api`: every YuE2 and audio
+   node). Go through `ComfyClient.combo_options()`, which handles both; reading
+   `spec[0]` reports "no models installed" for half the graph. `format` on
+   `SaveAudioAdvanced` is a third shape again — a dynamic combo whose chosen
+   option drags in a sibling `quality` input that is not in the top-level
+   schema, so `_format_extras()` fills it after `_node()` has run.
+4. **Python detection is by execution, never `where python` / PATH lookup.**
    Windows Store stubs resolve on PATH and fail on run. `run.bat` and
    `bootstrap.find_python` both test with `-c "import sys; ..."`.
-4. **Model downloads are resumable.** Stream to `<name>.part`, `Range` header on
+5. **Model downloads are resumable.** Stream to `<name>.part`, `Range` header on
    retry, atomic `replace()` on completion. Never write straight to the final
    filename.
-5. **Never touch an existing ComfyUI's Python environment.** Dependency install
+6. **Never touch an existing ComfyUI's Python environment.** Dependency install
    runs only in managed mode, only inside `comfy-venv`.
-6. **All HuggingFace work goes through the front end.** No CLI step, no manual
+7. **All HuggingFace work goes through the front end.** No CLI step, no manual
    file placement in the docs. Token, endpoint, repo, target folder and delete
    are all API-driven (`/api/hf/*`). The token is returned masked, never in full.
-7. **Model deletes are path-checked.** Folder must be in `MODEL_FOLDERS`, name
+8. **Model deletes are path-checked.** Folder must be in `MODEL_FOLDERS`, name
    must contain no separator, and the resolved path must sit under `models_dir`.
-8. **Long work is a Task, never a blocking request.** `manager.spawn()` returns
+9. **Long work is a Task, never a blocking request.** `manager.spawn()` returns
    immediately; the page polls `/api/tasks`. Cancel sets `task.cancel` and the
    worker checks it between chunks.
-9. **Finished audio is copied into `data/tracks/`.** ComfyUI's output folder is
-   not treated as storage.
+10. **Finished audio is copied into `data/tracks/`.** ComfyUI's output folder
+    is not treated as storage.
 
 ## Validation gate — run after any edit
 
 ```bash
-python -m py_compile server.py comfy.py bootstrap.py
+python -m py_compile server.py comfy.py bootstrap.py manager.py
 python - <<'PY'                       # extract inline JS, then: node --check
 import re, pathlib
 src = pathlib.Path('web/index.html').read_text()

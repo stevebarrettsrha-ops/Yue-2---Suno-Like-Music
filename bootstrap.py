@@ -273,10 +273,14 @@ def download(url: str, dest: Path, prog: Progress, key: str,
             part.rename(dest)
             return
         r.raise_for_status()
-        total = int(r.headers.get("Content-Length", 0)) + have or expected
-        mode = "ab" if have and r.status_code == 206 else "wb"
-        if mode == "wb":
+        # A 206 means the server honoured the Range header and Content-Length
+        # covers only what is left; a 200 means it ignored it and is sending the
+        # whole file again, so anything already on disk does not count.
+        resuming = bool(have) and r.status_code == 206
+        mode = "ab" if resuming else "wb"
+        if not resuming:
             have = 0
+        total = int(r.headers.get("Content-Length", 0)) + have or expected
         got = have
         last = 0.0
         with open(part, mode) as fh:
