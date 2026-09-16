@@ -235,6 +235,32 @@ class ComfyClient:
             # is required and unlinked ComfyUI reports it clearly.
         return {"class_type": class_type, "inputs": inputs}
 
+    def _add_preview(self, g: dict, node_id: str, source) -> str | None:
+        """Watch an ABC output so the score comes back with the finished song.
+
+        PreviewAny is an output node, so whatever reaches it is written into the
+        prompt's history under ui.text. It only observes — the music node still
+        reads the score straight from its generator — so a ComfyUI without
+        PreviewAny just means no score to show, never a failed render.
+        """
+        if "PreviewAny" not in self.schema():
+            return None
+        g[node_id] = self._node("PreviewAny", {
+            "source": {"names": ["source"], "value": source, "required": True},
+        })
+        return node_id
+
+    def preview_text(self, prompt_id: str, node_id: str | None) -> str:
+        """Read back what a PreviewAny node captured."""
+        if not node_id:
+            return ""
+        node_out = (self.history(prompt_id).get("outputs") or {}).get(node_id) or {}
+        for key in ("text", "result"):
+            for item in node_out.get(key, []) or []:
+                if isinstance(item, str) and item.strip():
+                    return item
+        return ""
+
     def build_prompt(self, p: dict) -> dict:
         """p: style, lyrics, duration, mode, steps, cfg, sampler, scheduler,
         seed, ckpt, use_abc, instrumental, tile_size, overlap, format,
@@ -254,8 +280,14 @@ class ComfyClient:
         })
 
         abc_link = None
+        abc_node = None                      # where to read the score back from
+        abc_text = (p.get("abc") or "").strip()
 
-        if p.get("reference_audio"):
+        if abc_text:
+            # A score the user wrote or edited wins over anything we could
+            # generate: feed it straight in and skip the planning stage.
+            abc_link = abc_text
+        elif p.get("reference_audio"):
             # Cover mode: transcribe the reference melody to ABC.
             encoders = self.audio_encoders()
             enc = next((e for e in encoders if "sheetsage" in e.lower()),
@@ -281,6 +313,7 @@ class ComfyClient:
                 "mode": {"names": ["mode"], "value": "melody"},
             })
             abc_link = ["19", 0]
+            abc_node = self._add_preview(g, "21", abc_link)
         elif p.get("use_abc", True):
             # Text-to-music with symbolic planning.
             g["23"] = self._node("YuE2GenerateABC", {
@@ -296,6 +329,7 @@ class ComfyClient:
                                "value": int(p.get("abc_tokens") or 8192)},
             })
             abc_link = ["23", 0]
+            abc_node = self._add_preview(g, "14", abc_link)
 
         music_wanted = {
             "clip": {"names": ["clip"], "value": ["15", 1], "required": True},
@@ -370,7 +404,8 @@ class ComfyClient:
         g["10"]["inputs"].update(extras)
 
         return {"prompt": g, "seed": seed, "ckpt": ckpt,
-                "abc": bool(abc_link), "decode": decode_class}
+                "abc": bool(abc_link), "abc_node": abc_node,
+                "abc_text": abc_text, "decode": decode_class}
 
     # ------------------------------------------------------------------ #
     # queue / results

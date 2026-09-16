@@ -458,6 +458,17 @@
           </div>
         </details>
 
+        <details class="card" id="cardAbc">
+          <summary><svg class="chev" viewBox="0 0 24 24"><path d="m9 6 6 6-6 6"/></svg>Score
+            <div class="tools">
+              <button class="iconbtn" id="btnCopyAbc" title="Copy the score"><svg viewBox="0 0 24 24"><path d="M9 9h10v10H9zM5 15V5h10"/></svg></button>
+              <button class="iconbtn" id="btnClearAbc" title="Clear — let YuE2 write it"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18"/></svg></button>
+            </div></summary>
+          <textarea id="abc" spellcheck="false"
+            placeholder="Leave this empty and YuE2 writes the melody and chords itself.&#10;Make a song, press the score button on it, and the notation lands here to edit and re-render."></textarea>
+          <p class="note" id="abcNote">Empty — YuE2 will write the score.</p>
+        </details>
+
         <details class="card" id="cardMore">
           <summary><svg class="chev" viewBox="0 0 24 24"><path d="m9 6 6 6-6 6"/></svg>More Options
             <div class="tools">
@@ -680,7 +691,8 @@
         <button class="btn go" id="btnRunSetup">Start setup</button>
         <button class="btn" id="btnSkipSetup">Not now</button>
       </div>
-      <p class="note">Missing Git or Python? The Engine page installs them for you.</p>
+      <p class="note">Missing Python, Git or ffmpeg? The Engine page installs them
+        for you — a new Python needs YuE Studio restarted before it is picked up.</p>
     </div>
     <div id="setupProgress" hidden>
       <div class="steps" id="stepList"></div>
@@ -840,13 +852,14 @@ function readOpts() {
 }
 function saveDraft() {
   store("yue.draft", { lyrics:$("lyrics").value, style:$("style").value,
-    title:$("songTitle").value, opts:readOpts() });
+    title:$("songTitle").value, abc:$("abc").value, opts:readOpts() });
 }
 function loadDraft() {
   S.likes = store("yue.likes") || {};
   const d = store("yue.draft"); if (!d) return;
   $("lyrics").value = d.lyrics || ""; $("style").value = d.style || "";
   $("songTitle").value = d.title || "";
+  $("abc").value = d.abc || ""; if (d.abc) $("cardAbc").open = true;
   const o = d.opts || {};
   if (o.vocal !== undefined) segSet("segVocal", o.vocal);
   if (o.durationMode) segSet("segDuration", o.durationMode);
@@ -893,7 +906,7 @@ function renderTracks() {
     row.className = "trow" + (S.playing === t.id ? " active" : "");
     row.innerHTML =
       '<div class="art"><canvas width="88" height="88"></canvas>' +
-      '<span class="dur">' + fmtTime(t.duration || 0) + "</span>" +
+      '<span class="dur">' + fmtTime(t.seconds || t.duration || 0) + "</span>" +
       '<span class="play"><svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg></span></div>' +
       '<div class="tmeta"><div class="t"><span class="n">' + esc(t.title) + "</span>" +
       '<span class="vbadge">' + versionBadge(t) + "</span></div>" +
@@ -903,6 +916,7 @@ function renderTracks() {
       '" data-act="like" title="Favourite"><svg viewBox="0 0 24 24"><path d="M12 20s-7-4.6-7-9a4 4 0 0 1 7-2.6A4 4 0 0 1 19 11c0 4.4-7 9-7 9z"/></svg></button>' +
       '<button class="iconbtn" data-act="reuse" title="Load these settings"><svg viewBox="0 0 24 24"><path d="M4 9a8 8 0 0 1 14-4M20 15a8 8 0 0 1-14 4"/><path d="M18 4v5h-5M6 20v-5h5"/></svg></button>' +
       '<button class="iconbtn" data-act="dl" title="Download"><svg viewBox="0 0 24 24"><path d="M12 4v11m0 0-4-4m4 4 4-4M5 20h14"/></svg></button>' +
+      (t.abc ? '<button class="iconbtn" data-act="score" title="Edit this song\'s melody plan"><svg viewBox="0 0 24 24"><path d="M9 18V5l10-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="16" cy="16" r="3"/></svg></button>' : "") +
       "</div></div>" +
       '<button class="iconbtn menu" data-act="menu" title="More"><svg viewBox="0 0 24 24"><circle cx="5" cy="12" r="1.4" fill="currentColor"/><circle cx="12" cy="12" r="1.4" fill="currentColor"/><circle cx="19" cy="12" r="1.4" fill="currentColor"/></svg></button>';
     paintArt(row.querySelector("canvas"), t.id + t.style);
@@ -918,7 +932,25 @@ function act(kind, t, btn) {
     renderTracks(); renderLib(); return; }
   if (kind === "dl") { window.open("/api/track/" + t.id, "_blank"); return; }
   if (kind === "reuse") { reuse(t); return; }
+  if (kind === "score") { loadScore(t); return; }
   if (kind === "menu") { openMenu(btn, t); return; }
+}
+/* Put a finished song's melody plan in the editor so it can be reworked. */
+function loadScore(t) {
+  if (!t.abc) { toast("This song has no score — it was made with the melody " +
+    "plan off, or on an older version.", true); return; }
+  show("create");
+  $("abc").value = t.abc;
+  $("cardAbc").open = true;
+  abcNote();
+  $("abc").focus();
+  toast("Score loaded from “" + t.title + "”. Edit it and press Create.");
+}
+function abcNote() {
+  const n = $("abc").value.trim();
+  $("abcNote").textContent = n
+    ? "Your score will be used as-is — " + n.split("\n").length + " lines. Clear it to let YuE2 write one."
+    : "Empty — YuE2 will write the score.";
 }
 function openMenu(btn, t) {
   document.querySelectorAll(".pop").forEach((p) => p.remove());
@@ -930,6 +962,7 @@ function openMenu(btn, t) {
   const items = [
     ["Play", function () { play(t); }],
     ["Load these settings", function () { reuse(t); }],
+    ["Edit the melody plan", function () { loadScore(t); }],
     ["Rename", function () { rename(t); }],
     ["Download", function () { window.open("/api/track/" + t.id, "_blank"); }],
     ["Copy the seed", function () {
@@ -1056,6 +1089,20 @@ function wirePlayer() {
     '<path d="M8 5v14l11-7z"/>'; renderTracks(); });
   a.addEventListener("ended", () => { if (S.repeat) { a.currentTime = 0; a.play(); }
     else step(1); });
+  // The decoded file is the last word on how long a song is. If the server
+  // could not read it (no ffprobe, mp3), save what the browser found so every
+  // card shows the real length from now on.
+  a.addEventListener("loadedmetadata", () => {
+    const t = S.tracks.find((x) => x.id === S.playing);
+    if (!t || !isFinite(a.duration) || a.duration <= 0) return;
+    const real = Math.round(a.duration * 100) / 100;
+    if (Math.abs((t.seconds || 0) - real) < 0.5) return;
+    t.seconds = real;
+    renderTracks();   // the only view that shows a length
+    fetch("/api/track/" + t.id, { method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ seconds: real }) }).catch(() => {});
+  });
   a.addEventListener("timeupdate", () => {
     $("tCur").textContent = fmtTime(a.currentTime);
     $("tDur").textContent = fmtTime(a.duration);
@@ -1081,6 +1128,8 @@ function collectParams() {
     duration: o.durationMode === "auto" ? 240 : o.duration,
     mode: o.plan === "none" ? "full" : o.plan,
     use_abc: o.plan !== "none",
+    // A score in the box replaces the planning stage entirely.
+    abc: $("abc").value.trim(),
     steps: o.steps,
     sampler: (st.samplers && st.samplers.indexOf("dpm_2") >= 0) ? "dpm_2" : null,
     scheduler: (st.schedulers && st.schedulers.indexOf("sgm_uniform") >= 0)
@@ -1569,6 +1618,14 @@ function wire() {
   $("btnClearLyrics").addEventListener("click", () => { $("lyrics").value = ""; saveDraft(); });
   $("btnClearStyle").addEventListener("click", () => {
     $("style").value = ""; syncChips(); saveDraft(); });
+  $("btnClearAbc").addEventListener("click", () => {
+    $("abc").value = ""; abcNote(); saveDraft(); });
+  $("btnCopyAbc").addEventListener("click", () => {
+    const v = $("abc").value.trim();
+    if (!v) { toast("There is no score to copy yet.", true); return; }
+    navigator.clipboard.writeText(v).then(() => toast("Score copied."),
+      () => toast("Could not reach the clipboard.", true)); });
+  $("abc").addEventListener("input", () => { abcNote(); saveDraft(); });
   $("style").addEventListener("input", () => { syncChips(); saveDraft(); });
   $("songTitle").addEventListener("input", saveDraft);
   $("btnChipList").addEventListener("click", () => {
@@ -1679,6 +1736,7 @@ function wire() {
 buildChips();
 loadDraft();
 syncChips();
+abcNote();
 wire();
 wirePlayer();
 show("home");

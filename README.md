@@ -33,8 +33,10 @@ downloads are kept in `.part` files and continued.
 Everything YuE Studio needs is listed there with a state next to it — Python, Git,
 ComfyUI, PyTorch, ComfyUI's packages, ffmpeg, the model files, the engine itself.
 Anything marked missing has an Install button beside it, and **Install everything
-missing** works through them in order. Output streams into the Activity log as it
-runs. Nothing needs a terminal.
+missing** works through them in order. Output streams into the Activity log as
+it runs. Nothing needs a terminal. Installing Python is the one step that needs
+YuE Studio restarted afterwards, because a program reads PATH once when it
+starts.
 
 If PyTorch will not install or your GPU is being ignored, pick a different build
 (CUDA 12.8 / 12.4 / 12.1, ROCm, CPU) on the same page and reinstall.
@@ -58,7 +60,11 @@ All HuggingFace work happens here:
 
 ### Requirements
 
-- Python 3.10 or newer
+- Python 3.10 or newer. On Windows `run.bat` offers to install it for you
+  through WinGet if it is missing — the Microsoft Store's Python install
+  manager, then Python 3.13 through that. (The standalone python.org installer
+  stops being released with Python 3.16, so the manager is the route that keeps
+  working.) On macOS and Linux the Engine page uses `brew` / `apt-get`.
 - Git (only for the managed-install route)
 - ComfyUI **v0.35.0 or newer** — YuE2 nodes are built in from that version.
   v0.35.1+ is recommended on AMD cards.
@@ -110,6 +116,13 @@ Leave lyrics empty, or switch Instrumental on, for a vocal-free track.
 - *Format* — `flac` keeps everything and needs nothing extra. `mp3` and `opus`
   are offered when your ComfyUI build supports them, and both need ffmpeg —
   the Engine page installs it.
+
+**Score** is the melody and chords the song gets built on, in ABC notation. Leave the
+box empty and YuE2 writes it. Press the score button on any finished song and
+its notation lands in the box, where you can change the key, tempo, a phrase or
+a chord and press Create again — that edited score is then used as-is and the
+planning stage is skipped, so the same tune comes back with your change in it.
+Clear the box to hand the job back to the model.
 
 **Cover from audio** uploads a reference song, transcribes its melody to ABC
 notation with SheetSage2, then re-sings it with your style and lyrics. The
