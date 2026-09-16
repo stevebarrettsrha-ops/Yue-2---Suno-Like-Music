@@ -84,3 +84,12 @@ YuE2GenerateMusic ─ seconds ─► EmptyYuE2LatentAudio ─ LATENT ─► KSam
 
 Cover mode swaps `YuE2GenerateABC` for `LoadAudio → AudioEncoderLoader →
 SheetSage2AudioToABC`. Both feed the same `abc` input.
+
+A `PreviewAny` watches whichever ABC source is in play (14 for the generator,
+21 for the cover branch) so the score comes back in the prompt's history under
+`ui.text` and can be shown and edited. It only observes — `YuE2GenerateMusic`
+still reads the score from its generator directly, so a ComfyUI without
+`PreviewAny` loses the Score panel and nothing else. A score in the Score box
+takes over completely: the generator and its preview are dropped and the text
+goes into `abc` as a literal, which is exactly what the node documents
+("Connect the ABC generator or supply an edited score").

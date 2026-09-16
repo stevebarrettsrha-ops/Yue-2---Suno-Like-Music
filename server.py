@@ -278,6 +278,10 @@ def run_job(job_id: str, params: dict) -> None:
             "sampler": params.get("sampler"),
             "checkpoint": built["ckpt"],
             "cover": bool(params.get("reference_audio")),
+            # The melody plan this song was actually built on, so it can be
+            # read, edited and re-rendered.
+            "abc": built["abc_text"] or client.preview_text(prompt_id,
+                                                            built["abc_node"]),
             "file": dest.name,
             "created": time.time(),
         }

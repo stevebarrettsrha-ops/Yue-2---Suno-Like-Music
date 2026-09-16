@@ -111,6 +111,13 @@ Leave lyrics empty, or switch Instrumental on, for a vocal-free track.
   are offered when your ComfyUI build supports them, and both need ffmpeg —
   the Engine page installs it.
 
+**Score** is the melody and chords the song gets built on, in ABC notation. Leave the
+box empty and YuE2 writes it. Press the score button on any finished song and
+its notation lands in the box, where you can change the key, tempo, a phrase or
+a chord and press Create again — that edited score is then used as-is and the
+planning stage is skipped, so the same tune comes back with your change in it.
+Clear the box to hand the job back to the model.
+
 **Cover from audio** uploads a reference song, transcribes its melody to ABC
 notation with SheetSage2, then re-sings it with your style and lyrics. The
 audio itself is never fed to the model — only the melody. Covers work best when
