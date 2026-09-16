@@ -18,7 +18,13 @@
    schema, so `_format_extras()` fills it after `_node()` has run.
 4. **Python detection is by execution, never `where python` / PATH lookup.**
    Windows Store stubs resolve on PATH and fail on run. `run.bat` and
-   `bootstrap.find_python` both test with `-c "import sys; ..."`.
+   `bootstrap.find_python` both test with `-c "import sys; ..."`. Python is
+   installable like Git and ffmpeg — `winget install 9NQ7512CXL7T` for the
+   Store's Python install manager then `py install 3.13`, `brew install
+   python`, `apt-get install python3 python3-venv` — so do not write that it
+   has to be fetched by hand. Anything installed this way is invisible to the
+   running process, which read PATH at startup: the follow-up step is marked
+   optional in `_PACKAGES` and the user is told to restart.
 5. **Model downloads are resumable.** Stream to `<name>.part`, `Range` header on
    retry, atomic `replace()` on completion. Never write straight to the final
    filename.

@@ -213,9 +213,14 @@ def dependencies(cfg: dict) -> list[dict]:
         items.append({"id": "python", "label": "Python 3.10+", "state": "ok",
                       "detail": py, "action": None})
     except Exception as exc:  # noqa: BLE001
+        installable = bool(_PACKAGES["python"].get(sysname))
         items.append({"id": "python", "label": "Python 3.10+", "state": "missing",
-                      "detail": str(exc), "action": None,
-                      "hint": "Install from python.org and restart YuE Studio."})
+                      "detail": str(exc),
+                      "action": "install" if installable else None,
+                      "hint": "Installing it needs a restart of YuE Studio "
+                              "before the new Python is on PATH."
+                              if installable else
+                              "Install from python.org and restart YuE Studio."})
 
     # Git
     git = _which("git")
@@ -301,11 +306,11 @@ def dependencies(cfg: dict) -> list[dict]:
 def install_dependency(dep_id: str, cfg: dict, opts: dict) -> Task:
     labels = {"git": "Install Git", "comfyui": "Install ComfyUI",
               "torch": "Install PyTorch", "comfy_reqs": "Install ComfyUI packages",
-              "ffmpeg": "Install ffmpeg"}
+              "ffmpeg": "Install ffmpeg", "python": "Install Python"}
     title = labels.get(dep_id, f"Install {dep_id}")
 
     def run(task: Task) -> None:
-        if dep_id in ("git", "ffmpeg"):
+        if dep_id in ("git", "ffmpeg", "python"):
             _install_system_package(dep_id, task)
         elif dep_id == "comfyui":
             _install_comfyui(task, cfg)
@@ -319,29 +324,67 @@ def install_dependency(dep_id: str, cfg: dict, opts: dict) -> Task:
     return spawn("dependency", title, run, {"dep": dep_id})
 
 
+# Each entry is the list of commands to run in order. A command marked
+# optional may fail without failing the install: on Windows a tool that has
+# just been put on PATH is not visible to this already-running process, so the
+# follow-up step often has to wait for a restart.
+_PACKAGES: dict[str, dict[str, list[tuple[list[str], bool]]]] = {
+    "git": {
+        "Windows": [(["winget", "install", "--id", "Git.Git", "-e",
+                      "--source", "winget", "--accept-package-agreements",
+                      "--accept-source-agreements"], False)],
+        "Darwin": [(["brew", "install", "git"], False)],
+        "Linux": [(["sudo", "apt-get", "install", "-y", "git"], False)],
+    },
+    "ffmpeg": {
+        "Windows": [(["winget", "install", "--id", "Gyan.FFmpeg", "-e",
+                      "--source", "winget", "--accept-package-agreements",
+                      "--accept-source-agreements"], False)],
+        "Darwin": [(["brew", "install", "ffmpeg"], False)],
+        "Linux": [(["sudo", "apt-get", "install", "-y", "ffmpeg"], False)],
+    },
+    "python": {
+        # The Store's Python install manager, then a runtime through it. The
+        # standalone python.org installer is on its way out — it stops being
+        # released with 3.16 — so the manager is the route that keeps working.
+        "Windows": [(["winget", "install", "9NQ7512CXL7T",
+                      "--accept-package-agreements",
+                      "--accept-source-agreements"], False),
+                    (["py", "install", "3.13"], True)],
+        "Darwin": [(["brew", "install", "python"], False)],
+        # python3-venv is separate on Debian and Ubuntu, and without it the
+        # ComfyUI environment cannot be created at all.
+        "Linux": [(["sudo", "apt-get", "install", "-y",
+                    "python3", "python3-venv", "python3-pip"], False)],
+    },
+}
+
+
 def _install_system_package(name: str, task: Task) -> None:
-    sysname = platform.system()
-    pkg = {"git": {"Windows": ["winget", "install", "--id", "Git.Git", "-e",
-                               "--source", "winget", "--accept-package-agreements",
-                               "--accept-source-agreements"],
-                   "Darwin": ["brew", "install", "git"],
-                   "Linux": ["sudo", "apt-get", "install", "-y", "git"]},
-           "ffmpeg": {"Windows": ["winget", "install", "--id", "Gyan.FFmpeg", "-e",
-                                  "--source", "winget",
-                                  "--accept-package-agreements",
-                                  "--accept-source-agreements"],
-                      "Darwin": ["brew", "install", "ffmpeg"],
-                      "Linux": ["sudo", "apt-get", "install", "-y", "ffmpeg"]}}
-    cmd = pkg[name].get(sysname)
-    if not cmd or not shutil.which(cmd[0]):
+    steps = _PACKAGES[name].get(platform.system())
+    if not steps:
+        raise RuntimeError(
+            f"{name} has to be installed by hand on this system. "
+            f"Install it, then press Recheck.")
+    tool = steps[0][0][0]
+    if not shutil.which(tool):
         raise RuntimeError(
             f"{name} has to be installed by hand on this system — "
-            f"'{cmd[0] if cmd else 'the package manager'}' is not available. "
-            f"Install {name}, then press Recheck.")
-    task.set(detail=f"Installing {name}…")
-    if stream(cmd, task) != 0:
-        raise RuntimeError(f"The installer for {name} did not finish. "
-                           "Install it by hand, then press Recheck.")
+            f"'{tool}' is not available. Install {name}, then press Recheck.")
+
+    for cmd, optional in steps:
+        if optional and not shutil.which(cmd[0]):
+            task.log(f"Skipping '{' '.join(cmd)}' — {cmd[0]} is not on PATH "
+                     f"in this process yet.")
+            continue
+        task.set(detail=f"Running {' '.join(cmd[:3])}…")
+        if stream(cmd, task) != 0:
+            if optional:
+                task.log(f"'{' '.join(cmd[:3])}' did not finish; a restart of "
+                         f"YuE Studio may be needed before it will run.")
+                continue
+            raise RuntimeError(f"The installer for {name} did not finish. "
+                               "Install it by hand, then press Recheck.")
     task.set(detail=f"{name} installed. It may need a restart of YuE Studio "
                     "to appear on PATH.")
 
