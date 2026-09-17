@@ -53,5 +53,27 @@ if ! find_python; then
 fi
 
 echo "  Using: $("$PY" -c 'import sys;print(sys.executable)')"
-"$PY" -m pip install --disable-pip-version-check --quiet -r requirements.txt
-exec "$PY" server.py
+
+# YuE Studio's own packages go into a virtual environment beside this script,
+# never into the Python that was found. Debian, Ubuntu and Homebrew all mark
+# their Python as externally managed and pip refuses to install into it (PEP
+# 668) — which is exactly the Python the offer above installs — and even where
+# pip would allow it, putting Flask into the system Python is not our business.
+VENV=".venv"
+if [ -e "$VENV" ] && ! "$VENV/bin/python" -c 'import sys' >/dev/null 2>&1; then
+  echo "  The existing environment no longer runs. Building it again."
+  rm -rf "$VENV"
+fi
+if [ ! -x "$VENV/bin/python" ]; then
+  echo "  Setting up YuE Studio's packages (first run only)..."
+  if ! "$PY" -m venv "$VENV"; then
+    echo "  Could not create the environment. On Debian and Ubuntu the venv" >&2
+    echo "  module ships separately:  sudo apt-get install -y python3-venv" >&2
+    echo "  Install it, then run this again." >&2
+    exit 1
+  fi
+fi
+
+"$VENV/bin/python" -m pip install --disable-pip-version-check --quiet \
+    -r requirements.txt
+exec "$VENV/bin/python" server.py

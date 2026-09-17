@@ -256,6 +256,51 @@ def venv_python(comfy_dir: Path) -> Path:
                    else "bin/python")
 
 
+def _interpreters(comfy_dir: Path) -> list[Path]:
+    """Where a ComfyUI install keeps the interpreter it runs on."""
+    win = platform.system() == "Windows"
+    exe = "Scripts/python.exe" if win else "bin/python"
+    cands = [comfy_dir / "venv" / exe,
+             comfy_dir / ".venv" / exe,
+             comfy_dir.parent / "venv" / exe,
+             comfy_dir.parent / ".venv" / exe,
+             venv_python(comfy_dir)]
+    if win:
+        # ComfyUI_windows_portable ships python_embeded next to the ComfyUI
+        # folder; the Desktop build keeps a standalone runtime instead.
+        cands += [comfy_dir.parent / "python_embeded" / "python.exe",
+                  comfy_dir.parent / "python_standalone" / "python.exe"]
+    else:
+        cands += [comfy_dir.parent / "python_standalone" / "bin" / "python"]
+    return cands
+
+
+def existing_python(comfy_dir: Path) -> str:
+    """The interpreter an existing ComfyUI already runs on, if we can find it.
+
+    Tested by running it, never by its path alone — the same rule as
+    find_python(). An install whose environment has torch wins outright; a
+    working interpreter without torch is the fallback, because it is still that
+    install's own environment and ours has no business replacing it.
+    """
+    fallback = ""
+    for cand in _interpreters(comfy_dir):
+        try:
+            if not cand.exists():
+                continue
+            out = _run([str(cand), "-c", "import importlib.util as u;"
+                                         "print(bool(u.find_spec('torch')))"],
+                       timeout=30)
+        except Exception:
+            continue
+        if out.returncode != 0:
+            continue
+        if out.stdout.strip().splitlines()[-1:] == ["True"]:
+            return str(cand)
+        fallback = fallback or str(cand)
+    return fallback
+
+
 # --------------------------------------------------------------------------- #
 # downloads
 # --------------------------------------------------------------------------- #
@@ -426,6 +471,19 @@ def run_setup(cfg: dict, prog: Progress, comfy: ComfyProcess,
                 comfy_dir = Path(chosen_dir)
                 cfg["managed"] = False
                 prog.log(f"Using existing ComfyUI at {comfy_dir}")
+                # Their install runs on its own interpreter. Recording the one
+                # we happened to find on PATH would start ComfyUI without the
+                # torch it needs, and would aim any later dependency install at
+                # the wrong environment.
+                own = existing_python(comfy_dir)
+                if own:
+                    cfg["python"] = own
+                    prog.log(f"That install runs on {own}")
+                else:
+                    cfg["python"] = ""
+                    prog.log("Could not find the Python environment that "
+                             "install uses — start ComfyUI yourself and "
+                             "YuE Studio will connect to it.")
             else:
                 comfy_dir = APP_DIR / "ComfyUI"
                 cfg["managed"] = True
@@ -508,6 +566,11 @@ def run_setup(cfg: dict, prog: Progress, comfy: ComfyProcess,
             port = int(url.rsplit(":", 1)[-1])
             if comfy_online(url):
                 prog.log(f"ComfyUI already running on port {port}")
+            elif not cfg.get("python"):
+                raise RuntimeError(
+                    f"Start ComfyUI yourself and make sure it answers at {url}. "
+                    "YuE Studio could not work out which Python that install "
+                    "uses, so it will not try to start it for you.")
             else:
                 comfy.start(cfg["python"], Path(cfg["comfy_dir"]), port, prog)
                 prog.detail("launch", "Waiting for ComfyUI to come up "

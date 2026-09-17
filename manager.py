@@ -29,7 +29,8 @@ from pathlib import Path
 import requests
 
 import bootstrap
-from bootstrap import APP_DIR, MODELS, MODEL_BF16, have_git, venv_python
+from bootstrap import (APP_DIR, MODELS, MODEL_BF16, existing_python,
+                       have_git, venv_python)
 
 DEFAULT_ENDPOINT = "https://huggingface.co"
 DEFAULT_REPO = "Comfy-Org/YuE2"
@@ -171,6 +172,8 @@ def comfy_python(cfg: dict) -> str:
         vp = venv_python(Path(cfg["comfy_dir"]))
         if vp.exists():
             return str(vp)
+        if not cfg.get("managed", True):
+            return existing_python(Path(cfg["comfy_dir"]))
     return ""
 
 
@@ -237,14 +240,28 @@ def dependencies(cfg: dict) -> list[dict]:
         items.append({"id": "comfyui", "label": "ComfyUI", "state": "missing",
                       "detail": "Not installed yet.", "action": "install"})
 
-    # PyTorch
-    torch = _probe_torch(comfy_python(cfg))
+    # PyTorch. A ComfyUI we did not install brings its own environment, and
+    # that environment is not ours to change — report what we find and leave
+    # the Install button off.
+    py = comfy_python(cfg)
+    ours = bool(cfg.get("managed", True))
+    torch = _probe_torch(py)
+    torch_detail = torch["detail"]
+    torch_action = "install" if torch["state"] != "ok" else "reinstall"
+    if not ours:
+        torch_action = None
+        if not py:
+            torch = {"state": "unknown"}
+            torch_detail = ("This ComfyUI brings its own Python environment. "
+                            "Start it yourself and press Recheck.")
+        elif torch["state"] != "ok":
+            torch = {"state": "warn"}
+            torch_detail = (f"{py} has no working PyTorch. Fix it in that "
+                            "install, or let YuE Studio set up its own ComfyUI.")
     items.append({"id": "torch", "label": "PyTorch", "state": torch["state"],
-                  "detail": torch["detail"],
-                  "action": "install" if torch["state"] != "ok" else "reinstall"})
+                  "detail": torch_detail, "action": torch_action})
 
     # ComfyUI requirements
-    py = comfy_python(cfg)
     reqs_state, reqs_detail = "unknown", "Install ComfyUI first."
     if comfy_dir and (comfy_dir / "requirements.txt").exists() and py:
         try:
@@ -257,8 +274,11 @@ def dependencies(cfg: dict) -> list[dict]:
                 reqs_state, reqs_detail = "missing", "Some packages are missing."
         except Exception as exc:  # noqa: BLE001
             reqs_state, reqs_detail = "unknown", str(exc)
+    elif not ours:
+        reqs_detail = "Managed by your own ComfyUI install."
     items.append({"id": "comfy_reqs", "label": "ComfyUI packages",
-                  "state": reqs_state, "detail": reqs_detail, "action": "install"})
+                  "state": reqs_state, "detail": reqs_detail,
+                  "action": "install" if ours else None})
 
     # ffmpeg (mp3 export)
     ff = _which("ffmpeg")
@@ -309,6 +329,12 @@ def install_dependency(dep_id: str, cfg: dict, opts: dict) -> Task:
               "ffmpeg": "Install ffmpeg", "python": "Install Python"}
     title = labels.get(dep_id, f"Install {dep_id}")
 
+    if dep_id in ("torch", "comfy_reqs") and not cfg.get("managed", True):
+        raise RuntimeError(
+            "This ComfyUI was not installed by YuE Studio, so its Python "
+            "environment is left alone. Install the packages there yourself, "
+            "or run setup again and pick a fresh ComfyUI.")
+
     def run(task: Task) -> None:
         if dep_id in ("git", "ffmpeg", "python"):
             _install_system_package(dep_id, task)
@@ -334,14 +360,14 @@ _PACKAGES: dict[str, dict[str, list[tuple[list[str], bool]]]] = {
                       "--source", "winget", "--accept-package-agreements",
                       "--accept-source-agreements"], False)],
         "Darwin": [(["brew", "install", "git"], False)],
-        "Linux": [(["sudo", "apt-get", "install", "-y", "git"], False)],
+        "Linux": [(["sudo", "-n", "apt-get", "install", "-y", "git"], False)],
     },
     "ffmpeg": {
         "Windows": [(["winget", "install", "--id", "Gyan.FFmpeg", "-e",
                       "--source", "winget", "--accept-package-agreements",
                       "--accept-source-agreements"], False)],
         "Darwin": [(["brew", "install", "ffmpeg"], False)],
-        "Linux": [(["sudo", "apt-get", "install", "-y", "ffmpeg"], False)],
+        "Linux": [(["sudo", "-n", "apt-get", "install", "-y", "ffmpeg"], False)],
     },
     "python": {
         # The Store's Python install manager, then a runtime through it. The
@@ -354,7 +380,7 @@ _PACKAGES: dict[str, dict[str, list[tuple[list[str], bool]]]] = {
         "Darwin": [(["brew", "install", "python"], False)],
         # python3-venv is separate on Debian and Ubuntu, and without it the
         # ComfyUI environment cannot be created at all.
-        "Linux": [(["sudo", "apt-get", "install", "-y",
+        "Linux": [(["sudo", "-n", "apt-get", "install", "-y",
                     "python3", "python3-venv", "python3-pip"], False)],
     },
 }
@@ -479,6 +505,9 @@ def hf_list(cfg: dict, repo: str, revision: str = "main") -> dict:
                                "model licence on huggingface.co first.")
         if r.status_code == 404:
             continue
+        if r.status_code >= 500:
+            raise RuntimeError(f"HuggingFace answered {r.status_code}. It is "
+                               "probably busy — try again in a moment.")
         r.raise_for_status()
         files = []
         for entry in r.json():
@@ -565,10 +594,14 @@ def _stream_download(url: str, dest: Path, task: Task, headers: dict) -> None:
             raise RuntimeError("HuggingFace refused the download. Add a token "
                                "with access to this repo and try again.")
         r.raise_for_status()
-        total = int(r.headers.get("Content-Length", 0)) + have
-        mode = "ab" if (have and r.status_code == 206) else "wb"
-        if mode == "wb":
+        # Only a 206 means the server honoured the Range header; on a 200 it is
+        # sending the whole file again, so what is already on disk counts for
+        # nothing — reset before working out the total, or the bar stops short.
+        resuming = bool(have) and r.status_code == 206
+        mode = "ab" if resuming else "wb"
+        if not resuming:
             have = 0
+        total = int(r.headers.get("Content-Length", 0)) + have
         got, last, started = have, 0.0, time.time()
         with open(part, mode) as fh:
             for chunk in r.iter_content(chunk_size=1024 * 1024):
@@ -596,14 +629,31 @@ def _stream_download(url: str, dest: Path, task: Task, headers: dict) -> None:
 
 
 def delete_model(cfg: dict, folder: str, name: str) -> None:
+    """Remove one model file, and nothing else.
+
+    The folder comes off a fixed list and the name has to be a bare filename,
+    so `root/folder/name` cannot climb out of the models tree. What is then
+    unlinked is that entry itself, never where it might point: a model file
+    that happens to be a symlink loses the link and leaves its target alone.
+    Big model folders are very often symlinks onto another drive, so the check
+    that the entry really sits in the chosen folder compares the two resolved
+    directories rather than matching path text — "/models" is a prefix of
+    "/models-elsewhere", and a string test lets a file outside be deleted.
+    """
     root = Path(cfg["models_dir"]) if cfg.get("models_dir") else None
     if not root:
         raise RuntimeError("No models folder is set.")
-    if folder not in MODEL_FOLDERS or "/" in name or "\\" in name:
+    if (folder not in MODEL_FOLDERS or not name or name in (".", "..")
+            or "/" in name or "\\" in name):
         raise RuntimeError("That path is not allowed.")
-    target = (root / folder / name).resolve()
-    if not str(target).startswith(str(root.resolve())):
-        raise RuntimeError("That path is outside the models folder.")
-    if not target.exists():
-        raise RuntimeError("That file is already gone.")
-    target.unlink()
+    entry = root / folder / name
+    try:
+        if entry.parent.resolve() != (root / folder).resolve():
+            raise RuntimeError("That path is outside the models folder.")
+    except OSError as exc:
+        raise RuntimeError("That path is outside the models folder.") from exc
+    if not entry.is_symlink() and not entry.is_file():
+        raise RuntimeError("That file is already gone."
+                           if not entry.exists() else
+                           "That is not a model file.")
+    entry.unlink()

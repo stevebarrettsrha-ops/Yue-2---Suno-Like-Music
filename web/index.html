@@ -1353,8 +1353,10 @@ async function installAllMissing() {
   const order = ["git","comfyui","torch","comfy_reqs"];
   try {
     const d = await api("/api/deps");
+    // action is null for anything YuE Studio will not install itself — a
+    // ComfyUI someone else set up owns its own Python environment.
     const missing = order.filter((id) =>
-      d.items.some((i) => i.id === id && i.state === "missing"));
+      d.items.some((i) => i.id === id && i.state === "missing" && i.action));
     if (!missing.length) { toast("Nothing missing. Try Start the engine."); return; }
     toast("Installing " + missing.length + " item(s), one after another.");
     for (const id of missing) {
