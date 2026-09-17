@@ -50,16 +50,132 @@ library_lock = threading.RLock()
 
 
 # --------------------------------------------------------------------------- #
+# request input
+#
+# Every value below arrives as JSON from outside this process. The front end
+# always sends the right shapes, but nothing enforces that, and a value of the
+# wrong type used to reach str.strip() or int() and end the request in a 500 —
+# or, worse, be written into the live config on its way to failing.
+# --------------------------------------------------------------------------- #
+def as_text(value, default: str = "") -> str:
+    if isinstance(value, str):
+        return value
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return str(value)
+    return default
+
+
+def as_int(value, default: int, low: int, high: int) -> int:
+    try:
+        number = int(float(value))
+    except (TypeError, ValueError, OverflowError):
+        return default
+    return max(low, min(number, high))
+
+
+def as_float(value, default: float, low: float, high: float) -> float:
+    try:
+        number = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return default
+    if number != number:                      # NaN compares unequal to itself
+        return default
+    return max(low, min(number, high))
+
+
+def as_cursor(raw: str) -> int:
+    """A log cursor from a query string, however mangled."""
+    try:
+        return max(0, int(raw))
+    except (TypeError, ValueError):
+        return 0
+
+
+# Bounds are the YuE2 and KSampler node limits, so a silly number is clamped
+# here instead of being rejected by ComfyUI after the job has already started.
+def clean_generate(body: dict) -> dict:
+    mode = as_text(body.get("mode"), "full")
+    return {
+        "style": as_text(body.get("style"))[:4000],
+        "lyrics": as_text(body.get("lyrics"))[:20000],
+        "title": as_text(body.get("title"))[:120],
+        "abc": as_text(body.get("abc"))[:60000],
+        "ckpt": as_text(body.get("ckpt"))[:260],
+        "format": as_text(body.get("format"))[:20],
+        "quality": as_text(body.get("quality"))[:20],
+        "sampler": as_text(body.get("sampler"))[:60] or None,
+        "scheduler": as_text(body.get("scheduler"))[:60] or None,
+        "reference_audio": as_text(body.get("reference_audio"))[:260] or None,
+        "mode": mode if mode in ("full", "melody") else "full",
+        "instrumental": bool(body.get("instrumental")),
+        "use_abc": bool(body.get("use_abc", True)),
+        "tiled_decode": bool(body.get("tiled_decode", True)),
+        "count": as_int(body.get("count"), 1, 1, 4),
+        "duration": as_int(body.get("duration"), 180, 1, 900),
+        "steps": as_int(body.get("steps"), 32, 1, 10000),
+        "top_k": as_int(body.get("top_k"), 100, 1, 32768),
+        "abc_tokens": as_int(body.get("abc_tokens"), 8192, 1, 20000),
+        "tile_size": as_int(body.get("tile_size"), 1920, 32, 8192),
+        "overlap": as_int(body.get("overlap"), 128, 0, 1024),
+        "cfg": as_float(body.get("cfg"), 1.0, 0.0, 100.0),
+        "top_p": as_float(body.get("top_p"), 0.95, 0.01, 1.0),
+        "repetition_penalty": as_float(body.get("repetition_penalty"),
+                                       1.2, 0.01, 10.0),
+        # None means "pick a fresh one", which is not the same as seed 0.
+        "seed": (None if body.get("seed") in (None, "")
+                 else as_int(body.get("seed"), 0, 0, 2**63 - 1)),
+    }
+
+
+LOCAL_HOSTS = {"localhost", "127.0.0.1", "::1", ""}
+
+
+@app.before_request
+def only_this_machine():
+    """Answer only to this machine's own names.
+
+    The server listens on loopback, but a browser sends a page's requests to
+    whatever a hostname resolves to — so a domain an attacker controls, pointed
+    at 127.0.0.1, reaches this server as same-origin and can read every answer.
+    Checking the name the request was addressed to closes that off and costs
+    nothing for a real local visit.
+    """
+    host = (request.host or "").rsplit(":", 1)[0].strip("[]").lower()
+    if host not in LOCAL_HOSTS:
+        return jsonify({"error": "YuE Studio only answers on this machine."}), 403
+
+
+# --------------------------------------------------------------------------- #
 # library
 # --------------------------------------------------------------------------- #
 def read_library() -> list[dict]:
+    """The song list — always a list of records, whatever the file holds.
+
+    library.json is plain text in a folder people can open: it can be
+    hand-edited, restored from an older copy, or left half-written by a crash.
+    A shape we did not expect must not stop songs being saved or served, so
+    anything that is not a usable record is simply left out.
+    """
     with library_lock:
         if not LIBRARY_PATH.exists():
             return []
         try:
-            return json.loads(LIBRARY_PATH.read_text(encoding="utf-8"))
+            items = json.loads(LIBRARY_PATH.read_text(encoding="utf-8"))
         except Exception:
             return []
+        if not isinstance(items, list):
+            return []
+        return [i for i in items if isinstance(i, dict) and i.get("id")]
+
+
+def track_file(item: dict) -> Path | None:
+    """Where a library entry's audio lives, or None if it names nothing sane.
+
+    Only ever a plain filename inside data/tracks: the name comes out of a
+    file anyone can edit, and it is used to both serve and delete.
+    """
+    name = Path(str(item.get("file") or "")).name
+    return (TRACKS_DIR / name) if name else None
 
 
 def write_library(items: list[dict]) -> None:
@@ -409,13 +525,15 @@ def api_setup_start():
     if progress.running:
         return jsonify({"ok": False, "error": "Setup is already running."}), 409
     body = request.get_json(silent=True) or {}
-    mode = body.get("mode", "auto")
-    chosen = body.get("comfy_dir", "")
-    for key in ("comfy_url", "models_dir", "torch_index",
-                "download_cover_model", "download_bf16", "auto_start_comfy"):
-        if key in body:
-            cfg[key] = body[key]
-    cfg["comfy_url"] = clean_url(cfg["comfy_url"])
+    mode = as_text(body.get("mode"), "auto")
+    if mode not in ("auto", "existing", "managed", "external"):
+        # Anything else used to fall through to the managed route, which
+        # clones ComfyUI and installs PyTorch — not something a typo should do.
+        return jsonify({"ok": False,
+                        "error": f"'{mode}' is not a setup route."}), 400
+    chosen = as_text(body.get("comfy_dir"))
+    cfg.update(settings_from(body, ("comfy_url", "models_dir", "torch_index")
+                             + FLAG_SETTINGS))
     client.url = cfg["comfy_url"]
     save_config(cfg)
     progress.__init__()  # reset log and step states
@@ -427,7 +545,7 @@ def api_setup_start():
 
 @app.get("/api/setup/state")
 def api_setup_state():
-    since = int(request.args.get("since", 0))
+    since = as_cursor(request.args.get("since", 0))
     snap = progress.snapshot(since)
     snap["comfy_tail"] = comfy_proc.tail(12)
     return jsonify(snap)
@@ -454,14 +572,40 @@ def api_comfy_start():
     return jsonify({"ok": True})
 
 
+TEXT_SETTINGS = ("comfy_url", "comfy_dir", "models_dir", "torch_index")
+FLAG_SETTINGS = ("auto_start_comfy", "download_cover_model", "download_bf16")
+
+
+def settings_from(body: dict, keys: tuple[str, ...]) -> dict:
+    """Read the settings a request is allowed to change, as their real types.
+
+    Built in full before anything is applied: a half-applied change that then
+    fails leaves the running app pointing at a value it already rejected.
+    """
+    change: dict = {}
+    for key in keys:
+        if key not in body:
+            continue
+        value = body[key]
+        if key in FLAG_SETTINGS:
+            change[key] = bool(value)
+        elif isinstance(value, str):
+            change[key] = value
+        # Anything else is not something the page sends. Leaving the key alone
+        # keeps a setting that was working from being replaced by nonsense.
+    if "comfy_url" in change:
+        usable = clean_url(change["comfy_url"])
+        if usable:
+            change["comfy_url"] = usable
+        else:
+            change.pop("comfy_url")
+    return change
+
+
 @app.post("/api/config")
 def api_config():
     body = request.get_json(silent=True) or {}
-    for key in ("comfy_url", "comfy_dir", "models_dir", "auto_start_comfy",
-                "download_cover_model", "download_bf16", "torch_index"):
-        if key in body:
-            cfg[key] = body[key]
-    cfg["comfy_url"] = clean_url(cfg["comfy_url"])
+    cfg.update(settings_from(body, TEXT_SETTINGS + FLAG_SETTINGS))
     client.url = cfg["comfy_url"]
     save_config(cfg)
     return jsonify({"ok": True, "config": cfg})
@@ -472,14 +616,14 @@ def api_config():
 # --------------------------------------------------------------------------- #
 @app.post("/api/generate")
 def api_generate():
-    params = request.get_json(silent=True) or {}
-    if not (params.get("style") or "").strip():
+    params = clean_generate(request.get_json(silent=True) or {})
+    if not params["style"].strip():
         return jsonify({"error": "Add a style description before generating."}), 400
     if not comfy_online(cfg["comfy_url"]):
         return jsonify({"error": "ComfyUI is not running. Start it from "
                                  "Settings."}), 503
 
-    count = max(1, min(int(params.get("count") or 1), 4))
+    count = params["count"]
     created = []
     with jobs_lock:
         stale = [k for k, j in jobs.items()
@@ -552,12 +696,12 @@ def api_library():
 def api_track(track_id: str):
     for item in read_library():
         if item["id"] == track_id:
-            path = TRACKS_DIR / item["file"]
-            if not path.exists():
+            path = track_file(item)
+            if path is None or not path.is_file():
                 return jsonify({"error": "Audio file is missing."}), 404
             mime = mimetypes.guess_type(path.name)[0] or "audio/flac"
             return send_file(path, mimetype=mime, conditional=True,
-                             download_name=f"{item['title']}{path.suffix}")
+                             download_name=f"{item.get('title') or 'track'}{path.suffix}")
     return jsonify({"error": "Track not found."}), 404
 
 
@@ -595,8 +739,11 @@ def api_delete(track_id: str):
     # The file goes after the list is settled — deleting it first would leave a
     # library entry pointing at nothing if the write failed.
     for item in gone:
+        path = track_file(item)
+        if path is None:
+            continue
         try:
-            (TRACKS_DIR / item["file"]).unlink(missing_ok=True)
+            path.unlink(missing_ok=True)
         except OSError:
             pass
     return jsonify({"ok": True})
@@ -615,8 +762,11 @@ def api_deps():
 @app.post("/api/deps/<dep_id>/install")
 def api_dep_install(dep_id: str):
     body = request.get_json(silent=True) or {}
+    if dep_id not in manager.INSTALLABLE:
+        return jsonify({"error": f"There is nothing called '{dep_id}' to "
+                                 "install."}), 400
     if body.get("torch_index") is not None:
-        cfg["torch_index"] = body["torch_index"]
+        cfg["torch_index"] = as_text(body["torch_index"])
         save_config(cfg)
     try:
         task = manager.install_dependency(dep_id, cfg, body)
@@ -627,7 +777,7 @@ def api_dep_install(dep_id: str):
 
 @app.get("/api/tasks")
 def api_tasks():
-    since = int(request.args.get("since", 0))
+    since = as_cursor(request.args.get("since", 0))
     task_id = request.args.get("id", "")
     if task_id:
         task = manager.TASKS.get(task_id)
@@ -666,13 +816,14 @@ def api_hf_settings():
 def api_hf_settings_save():
     body = request.get_json(silent=True) or {}
     if "token" in body:
-        cfg["hf_token"] = (body["token"] or "").strip()
+        cfg["hf_token"] = as_text(body["token"]).strip()
     if body.get("endpoint") is not None:
-        cfg["hf_endpoint"] = body["endpoint"].strip() or manager.DEFAULT_ENDPOINT
+        cfg["hf_endpoint"] = (as_text(body["endpoint"]).strip()
+                              or manager.DEFAULT_ENDPOINT)
     if body.get("repo"):
-        cfg["hf_repo"] = body["repo"].strip()
+        cfg["hf_repo"] = as_text(body["repo"]).strip() or manager.DEFAULT_REPO
     if body.get("models_dir"):
-        cfg["models_dir"] = body["models_dir"].strip()
+        cfg["models_dir"] = as_text(body["models_dir"]).strip()
     save_config(cfg)
     return jsonify({"ok": True})
 

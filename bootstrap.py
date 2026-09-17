@@ -59,14 +59,28 @@ MODEL_BF16 = (
     False,
 )
 
-def clean_url(url: str) -> str:
-    """A base URL fit to build requests on.
+DEFAULT_COMFY_URL = "http://127.0.0.1:8188"
+
+
+def clean_url(url) -> str:
+    """A base URL fit to build requests on, or "" if it cannot be made into one.
 
     No stray whitespace and no trailing slash — appending /system_stats to
     "http://host:8188/" asks for //system_stats, which is a 404, not a health
-    check — and never empty.
+    check. A bare "localhost:8188", which is what people type, gains the
+    scheme it is missing; anything with no host at all comes back empty so the
+    caller can keep whatever address was already working.
     """
-    return (url or "").strip().rstrip("/") or "http://127.0.0.1:8188"
+    text = url.strip().rstrip("/") if isinstance(url, str) else ""
+    if not text:
+        return ""
+    if "://" not in text:
+        text = "http://" + text
+    parts = urlsplit(text)
+    if (parts.scheme not in ("http", "https") or not parts.hostname
+            or any(ch.isspace() for ch in parts.netloc)):
+        return ""
+    return text
 
 
 def comfy_port(url: str) -> int:
@@ -77,14 +91,14 @@ def comfy_port(url: str) -> int:
     stopped the server from booting at all.
     """
     try:
-        port = urlsplit(clean_url(url)).port
+        port = urlsplit(clean_url(url) or DEFAULT_COMFY_URL).port
     except ValueError:
         port = None
     return port or 8188
 
 
 DEFAULT_CONFIG = {
-    "comfy_url": "http://127.0.0.1:8188",
+    "comfy_url": DEFAULT_COMFY_URL,
     "comfy_dir": "",       # ComfyUI root (managed or existing)
     "models_dir": "",      # ComfyUI/models
     "python": "",          # interpreter used to run ComfyUI
@@ -110,7 +124,7 @@ def load_config() -> dict:
             pass
     # Heal a URL saved before it was normalised — a trailing slash in here
     # used to keep the whole app from starting.
-    cfg["comfy_url"] = clean_url(cfg.get("comfy_url", ""))
+    cfg["comfy_url"] = clean_url(cfg.get("comfy_url")) or DEFAULT_COMFY_URL
     return cfg
 
 
