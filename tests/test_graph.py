@@ -94,6 +94,18 @@ def run(slow: bool = False) -> Suite:
             s.check("the latent takes its length from the music node",
                     g("plan on")["5"]["inputs"]["seconds"] == ["22", 1])
 
+        # -- how long a song may run ---------------------------------------
+        # max_duration is a ceiling: the model stops when the song ends, so a
+        # bigger number never pads a short song, it only stops a long one being
+        # cut off. Auto used to send 240 and cut every song at four minutes.
+        s.equal("the ceiling is read from the engine, not assumed",
+                client.duration_limit(), 900)
+        for asked, sent in ((180, 180), (420, 420), (900, 900), (5000, 900)):
+            g = client.build_prompt({"style": "x", "lyrics": "y",
+                                     "duration": asked})
+            s.equal(f"asking for {asked}s sends {sent}s",
+                    g["prompt"]["22"]["inputs"]["max_duration"], sent)
+
         # -- sampler and scheduler follow the schema, not our preference ----
         ks = schema["KSampler"]["input"]["required"]
         for label, samplers, scheds in [

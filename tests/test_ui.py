@@ -78,6 +78,20 @@ def run(slow: bool = False) -> Suite:
                     page.input_value("#style") == before)
 
             page.click("#cardMore summary")
+            lengths = page.locator("#duration option").all_inner_texts()
+            s.check("Length is offered as real song lengths",
+                    "3:00" in lengths and "7:00" in lengths
+                    and any("Auto" in l for l in lengths), str(lengths[:4]))
+            s.equal("and Auto is what a new song starts on",
+                    page.input_value("#duration"), "auto")
+            page.select_option("#duration", "300")
+            page.reload(wait_until="networkidle")
+            page.click('.nav[data-view="create"]')
+            page.click("#cardMore summary")
+            s.equal("a chosen length is remembered",
+                    page.input_value("#duration"), "300")
+            page.select_option("#duration", "auto")
+
             formats = page.locator("#format option").all_inner_texts()
             s.check("Save as offers the formats the engine reported",
                     {"flac", "mp3"} <= set(formats), str(formats))

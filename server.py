@@ -111,7 +111,9 @@ def clean_generate(body: dict) -> dict:
         "use_abc": bool(body.get("use_abc", True)),
         "tiled_decode": bool(body.get("tiled_decode", True)),
         "count": as_int(body.get("count"), 1, 1, 4),
-        "duration": as_int(body.get("duration"), 180, 1, 900),
+        # The engine's own ceiling is applied when the graph is built; this is
+        # only here to stop a nonsense number getting that far.
+        "duration": as_int(body.get("duration"), 180, 1, 24 * 3600),
         "steps": as_int(body.get("steps"), 32, 1, 10000),
         "top_k": as_int(body.get("top_k"), 100, 1, 32768),
         "abc_tokens": as_int(body.get("abc_tokens"), 8192, 1, 20000),
@@ -602,6 +604,7 @@ def api_status():
                 [e for e in client.audio_encoders() if "sheetsage" in e.lower()])
             payload["samplers"], payload["schedulers"] = client.samplers()
             payload["formats"] = available_formats(client.save_formats())
+            payload["max_duration"] = client.duration_limit()
         except Exception as exc:  # ComfyUI up but too old / still loading
             payload["schema_error"] = str(exc)
     return jsonify(payload)

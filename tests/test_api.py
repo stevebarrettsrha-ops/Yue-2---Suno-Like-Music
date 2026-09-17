@@ -79,6 +79,18 @@ def run(slow: bool = False) -> Suite:
         s.check("the song made without a plan has no score",
                 any(not t["abc"] for t in library))
 
+        # -- a song is not cut short of its lyrics -------------------------
+        limit = requests.get(f"{api}/api/status", timeout=10).json()["max_duration"]
+        s.equal("the page is told how long a song may run", limit, 900)
+        for asked in (180, 420, limit):
+            made = requests.post(f"{api}/api/generate",
+                                 json={"style": f"{asked}s", "lyrics": "x",
+                                       "duration": asked}, timeout=20).json()
+            finish_jobs(api, 60)
+            song = requests.get(f"{api}/api/library", timeout=10).json()[0]
+            s.equal(f"a song asked to run {asked}s is asked for as {asked}s",
+                    song["duration"], asked)
+
         # -- the format asked for is the format kept ------------------------
         import shutil as _shutil
         offered = requests.get(f"{api}/api/status", timeout=10).json()["formats"]

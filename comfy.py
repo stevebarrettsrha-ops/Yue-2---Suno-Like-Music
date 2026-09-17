@@ -143,6 +143,23 @@ class ComfyClient:
         return (self.combo_options(spec.get("sampler_name")),
                 self.combo_options(spec.get("scheduler")))
 
+    def duration_limit(self) -> int:
+        """The longest song this ComfyUI's YuE2 will make, per its own schema.
+
+        Read rather than assumed: the ceiling is what the node accepts, and a
+        release that raises it should raise what the page can ask for too.
+        """
+        try:
+            spec = self.node_inputs("YuE2GenerateMusic").get("max_duration")
+        except ComfyError:
+            return 900
+        opts = (spec[1] if isinstance(spec, (list, tuple)) and len(spec) > 1
+                and isinstance(spec[1], dict) else {})
+        try:
+            return int(float(opts.get("max") or 0)) or 900
+        except (TypeError, ValueError):
+            return 900
+
     def pick_option(self, spec, *preferred: str) -> str | None:
         """The first preferred choice this schema actually offers.
 
@@ -287,7 +304,10 @@ class ComfyClient:
         seed = int(p.get("seed") or random.randint(0, 2**31 - 1))
         style = (p.get("style") or "").strip()
         lyrics = "" if p.get("instrumental") else (p.get("lyrics") or "").strip()
-        duration = int(p.get("duration") or 180)
+        # The node treats this as a ceiling and stops when the song ends, so
+        # asking for longer never pads a short song — it only stops a long one
+        # being cut off mid-verse.
+        duration = min(int(p.get("duration") or 180), self.duration_limit())
         mode = p.get("mode") or "full"
         ckpt = self.pick_checkpoint(p.get("ckpt", ""))
 
