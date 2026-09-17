@@ -708,10 +708,20 @@ def pip_progress(line: str, state: dict) -> str | None:
     draws no bar unless it is talking to a terminal.
     """
     if line.startswith("Downloading "):
-        state["what"] = line.split()[1].split("-")[0] or "package"
+        state["what"] = "Downloading " + (line.split()[1].split("-")[0]
+                                          or "package")
         state["at"] = 0
         state["total"] = 0
         state["since"] = time.time()
+        return None
+    if line.startswith("Installing collected packages"):
+        # Nothing is printed again until this finishes, and for a 2.7 GB
+        # PyTorch that is minutes of writing thousands of files. Say which
+        # part is slow rather than leaving the last download's name up.
+        state["what"] = "Unpacking and installing — the slow part"
+        return None
+    if line.startswith(("Building", "Preparing", "Getting requirements")):
+        state["what"] = line[:60]
         return None
     if not line.startswith("Progress "):
         return None
@@ -724,13 +734,17 @@ def pip_progress(line: str, state: dict) -> str | None:
     elapsed = max(time.time() - state.get("since", time.time()), 0.001)
     speed = got / elapsed
     left = (total - got) / speed if speed > 0 else 0
-    what = state.get("what", "package")
+    what = state.get("what", "package").replace("Downloading ", "")
     if total <= 0:
         return f"{what} — {got/1e6:.0f} MB so far"
     size = ((f"{got/1e9:.2f} of {total/1e9:.2f} GB") if total >= 1e9
             else (f"{got/1e6:.0f} of {total/1e6:.0f} MB"))
-    return (f"{what} — {size} ({got * 100 // total}%) · "
-            f"{speed/1e6:.1f} MB/s · "
+    head = f"{what} — {size} ({got * 100 // total}%)"
+    # A rate measured over the first fraction of a second is nonsense — a
+    # resumed file can report a whole chunk at once and read as 1288490 MB/s.
+    if elapsed < 1.5 or speed <= 0:
+        return head
+    return (f"{head} · {speed/1e6:.1f} MB/s · "
             f"{int(left // 60)}m {int(left % 60):02d}s left")
 
 

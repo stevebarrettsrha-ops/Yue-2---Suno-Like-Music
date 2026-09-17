@@ -126,6 +126,70 @@ def run(slow: bool = False) -> Suite:
                         r.status_code < 500, f"HTTP {r.status_code}")
         s.check("the file outside data/tracks was never touched", outside.exists())
 
+        # -- a song is kept in the format that was asked for ---------------
+        import shutil as _shutil
+        import wave as _wave
+        raw = data / "raw.wav"
+        with _wave.open(str(raw), "wb") as handle:
+            handle.setnchannels(1); handle.setsampwidth(2)
+            handle.setframerate(8000)
+            handle.writeframes(b"\x00\x00" * 8000 * 2)      # two seconds
+
+        # ComfyUI writes these itself, so nothing is converted and nothing is
+        # needed to keep them.
+        for fmt in ("flac", "mp3", "opus"):
+            rendered = server.TRACKS_DIR / f"song.{fmt}"
+            rendered.write_bytes(b"whatever ComfyUI rendered")
+            s.equal(f"a song asked for as {fmt} is kept exactly as rendered",
+                    server.save_as(rendered, "song", fmt), rendered)
+            s.check(f"and the {fmt} is still there", rendered.exists())
+        s.equal("only a wav has to be made from the render",
+                [server.render_format(f) for f in ("flac", "mp3", "opus", "wav")],
+                ["flac", "mp3", "opus", "flac"])
+
+        if _shutil.which("ffmpeg"):
+            master = server.TRACKS_DIR / "towav.flac"
+            server.convert_audio(raw, master)
+            kept = server.save_as(master, "towav", "wav")
+            s.equal("a song asked for as wav is kept as one", kept.name,
+                    "towav.wav")
+            s.check("and it really is a wav",
+                    kept.read_bytes()[:4] == b"RIFF")
+            s.check("the render it was made from is not kept as well",
+                    not master.exists())
+            s.check("its length is read back off the wav",
+                    abs((server.audio_duration(kept) or 0) - 2.0) < 0.05)
+            s.check("wav is offered when ffmpeg can write one",
+                    "wav" in server.available_formats(["flac", "mp3", "opus"]))
+        else:
+            s.check("ffmpeg is present to test conversion", False,
+                    "skipped — no ffmpeg on this machine")
+
+        # With no ffmpeg there is no wav to be had, so it is neither offered
+        # nor pretended: the song stays as the lossless render.
+        keep = server.shutil.which
+        server.shutil.which = lambda name: None
+        try:
+            s.equal("wav is not offered when nothing can write one",
+                    server.available_formats(["flac", "mp3"]), ["flac", "mp3"])
+            stays = server.TRACKS_DIR / "nofmpeg.flac"
+            stays.write_bytes(b"the lossless render")
+            s.equal("and a song asked for as wav stays as the render",
+                    server.save_as(stays, "nofmpeg", "wav"), stays)
+            s.check("with the render still on disk", stays.exists())
+        finally:
+            server.shutil.which = keep
+
+        s.check("a file is never converted onto itself",
+                server.convert_audio(raw, raw) is False)
+        s.equal("a song with one file knows about that one",
+                [p.name for p in server.track_files({"id": "y", "file": "a.wav"})],
+                ["a.wav"])
+        s.equal("a song made when two were kept still cleans up both",
+                sorted(p.name for p in server.track_files(
+                    {"id": "x", "file": "b.wav", "mp3": "b.mp3"})),
+                ["b.mp3", "b.wav"])
+
         # -- how long a song is --------------------------------------------
         for rate, samples, want in [(44100, 44100 * 185, 185.0),
                                     (48000, 48000 * 212 + 24000, 212.5),

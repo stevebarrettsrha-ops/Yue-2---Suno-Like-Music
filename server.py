@@ -168,14 +168,83 @@ def read_library() -> list[dict]:
         return [i for i in items if isinstance(i, dict) and i.get("id")]
 
 
-def track_file(item: dict) -> Path | None:
+def track_file(item: dict, kind: str = "") -> Path | None:
     """Where a library entry's audio lives, or None if it names nothing sane.
+
+    A song is kept twice: a wav to listen to and keep, and an mp3 to send
+    someone. `kind` picks one of those; without it you get the wav, or
+    whatever single file an older song was saved as.
 
     Only ever a plain filename inside data/tracks: the name comes out of a
     file anyone can edit, and it is used to both serve and delete.
     """
-    name = Path(str(item.get("file") or "")).name
+    name = Path(str(item.get(kind or "file") or "")).name
     return (TRACKS_DIR / name) if name else None
+
+
+def track_files(item: dict) -> list[Path]:
+    """Everything on disk that belongs to this song."""
+    found = []
+    for kind in ("file", "mp3"):
+        path = track_file(item, kind)
+        if path and path not in found:
+            found.append(path)
+    return found
+
+
+# --------------------------------------------------------------------------- #
+# what a finished song is saved as
+#
+# ComfyUI writes flac, mp3 and opus itself, so those are rendered straight to
+# the format asked for. It has no wav encoder at all, so a wav is rendered
+# lossless and converted here — the one format that needs ffmpeg.
+# --------------------------------------------------------------------------- #
+def convert_audio(src: Path, dest: Path, args: tuple = ()) -> bool:
+    """Re-encode one file into another. False if ffmpeg cannot or is absent."""
+    ffmpeg = shutil.which("ffmpeg")
+    if not ffmpeg or src == dest:
+        return False
+    try:
+        done = subprocess.run(
+            [ffmpeg, "-y", "-loglevel", "error", "-i", str(src), *args,
+             str(dest)], capture_output=True, text=True, timeout=900)
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return (done.returncode == 0 and dest.is_file()
+            and dest.stat().st_size > 0)
+
+
+def available_formats(rendered: list[str]) -> list[str]:
+    """What Save as can offer: what this ComfyUI writes, and wav if we can."""
+    formats = [f for f in rendered if f]
+    if shutil.which("ffmpeg") and "wav" not in formats:
+        formats.insert(1 if formats else 0, "wav")
+    return formats
+
+
+def render_format(wanted: str) -> str:
+    """What to ask ComfyUI for, to end up with what was asked for."""
+    return "flac" if wanted == "wav" else wanted
+
+
+def save_as(master: Path, track_id: str, wanted: str) -> Path:
+    """The file the song is kept as, converting only when we have to.
+
+    Everything but wav comes out of ComfyUI already in the right format. A wav
+    is made from the lossless render, and if there is no ffmpeg to make it
+    with, the song stays as that render — it still plays and downloads, and
+    the Engine page offers to install ffmpeg in one press.
+    """
+    if wanted != "wav" or master.suffix.lower() == ".wav":
+        return master
+    dest = TRACKS_DIR / f"{track_id}.wav"
+    if not convert_audio(master, dest):
+        return master
+    try:
+        master.unlink(missing_ok=True)      # the wav holds everything it did
+    except OSError:
+        pass
+    return dest
 
 
 def write_library(items: list[dict]) -> None:
@@ -209,15 +278,25 @@ def audio_duration(path: Path) -> float | None:
     else falls back to ffprobe, and if that is missing the front end backfills
     the real duration the first time the track is played.
     """
-    for reader in (_duration_flac, _duration_opus, _duration_ffprobe):
+    for reader in (_duration_wav, _duration_flac, _duration_opus,
+                   _duration_ffprobe):
         try:
             seconds = reader(path)
         except (OSError, ValueError, IndexError, ZeroDivisionError,
-                subprocess.SubprocessError):
+                subprocess.SubprocessError, __import__("wave").Error):
             continue
         if seconds and seconds > 0:
             return round(seconds, 2)
     return None
+
+
+def _duration_wav(path: Path) -> float | None:
+    if path.suffix.lower() != ".wav":
+        return None
+    import wave
+    with wave.open(str(path), "rb") as handle:
+        rate = handle.getframerate()
+        return handle.getnframes() / rate if rate else None
 
 
 def _duration_flac(path: Path) -> float | None:
@@ -347,6 +426,9 @@ def run_job(job_id: str, params: dict) -> None:
                 kw.setdefault("ended", time.time())
             jobs[job_id].update(kw)
 
+    wanted = (params.get("format") or "flac").lower()
+    params = {**params, "format": render_format(wanted)}
+
     try:
         set_state(stage="Building the graph", pct=2)
         built = client.build_prompt(params)
@@ -438,6 +520,10 @@ def run_job(job_id: str, params: dict) -> None:
                 for chunk in resp.iter_content(1024 * 256):
                     fh.write(chunk)
 
+        if wanted == "wav":
+            set_state(stage="Saving as wav", pct=96)
+        kept = save_as(dest, track_id, wanted)
+
         track = {
             "id": track_id,
             "title": track_title(params),
@@ -449,7 +535,7 @@ def run_job(job_id: str, params: dict) -> None:
             # back into the slider; seconds is how long the song actually came
             # out, and is what gets shown.
             "duration": params.get("duration"),
-            "seconds": audio_duration(dest),
+            "seconds": audio_duration(kept),
             "mode": params.get("mode"),
             "steps": params.get("steps"),
             "cfg": params.get("cfg"),
@@ -460,7 +546,8 @@ def run_job(job_id: str, params: dict) -> None:
             # read, edited and re-rendered.
             "abc": built["abc_text"] or client.preview_text(prompt_id,
                                                             built["abc_node"]),
-            "file": dest.name,
+            "file": kept.name,
+            "format": kept.suffix.lstrip(".").lower(),
             "created": time.time(),
         }
         add_track(track)
@@ -514,7 +601,7 @@ def api_status():
             payload["has_cover_model"] = bool(
                 [e for e in client.audio_encoders() if "sheetsage" in e.lower()])
             payload["samplers"], payload["schedulers"] = client.samplers()
-            payload["formats"] = client.save_formats()
+            payload["formats"] = available_formats(client.save_formats())
         except Exception as exc:  # ComfyUI up but too old / still loading
             payload["schema_error"] = str(exc)
     return jsonify(payload)
@@ -739,13 +826,11 @@ def api_delete(track_id: str):
     # The file goes after the list is settled — deleting it first would leave a
     # library entry pointing at nothing if the write failed.
     for item in gone:
-        path = track_file(item)
-        if path is None:
-            continue
-        try:
-            path.unlink(missing_ok=True)
-        except OSError:
-            pass
+        for path in track_files(item):
+            try:
+                path.unlink(missing_ok=True)
+            except OSError:
+                pass
     return jsonify({"ok": True})
 
 

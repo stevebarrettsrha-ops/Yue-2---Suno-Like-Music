@@ -24,8 +24,9 @@ def run(slow: bool = False) -> Suite:
         s.check("status reports a ready engine",
                 st["ready"] and st["comfy_online"])
         s.check("status offers the checkpoints and formats the page needs",
-                st.get("checkpoints") and st.get("formats") == ["flac", "mp3", "opus"]
-                and st.get("has_cover_model"))
+                bool(st.get("checkpoints"))
+                and {"flac", "mp3", "opus"} <= set(st.get("formats") or [])
+                and st.get("has_cover_model"), str(st.get("formats")))
 
         # -- the setup sheet's steps arrive in the order they happen -------
         # They are shown as a checklist, so their order is the meaning. Flask
@@ -78,6 +79,38 @@ def run(slow: bool = False) -> Suite:
         s.check("the song made without a plan has no score",
                 any(not t["abc"] for t in library))
 
+        # -- the format asked for is the format kept ------------------------
+        import shutil as _shutil
+        offered = requests.get(f"{api}/api/status", timeout=10).json()["formats"]
+        s.check("the engine's own formats are offered",
+                {"flac", "mp3"} <= set(offered), str(offered))
+        s.equal("wav is offered exactly when ffmpeg can write one",
+                "wav" in offered, bool(_shutil.which("ffmpeg")))
+
+        magic = {"flac": b"fLaC", "wav": b"RIFF", "opus": b"OggS"}
+        for fmt in offered:
+            requests.post(f"{api}/api/generate",
+                          json={"style": f"a {fmt} song", "lyrics": "x",
+                                "format": fmt}, timeout=20)
+            finish_jobs(api, 60)
+            song = requests.get(f"{api}/api/library", timeout=10).json()[0]
+            if not s.check(f"a song asked for as {fmt} is saved as one",
+                           song.get("file", "").endswith(f".{fmt}")
+                           and song.get("format") == fmt,
+                           song.get("file", "")):
+                continue
+            got = requests.get(f"{api}/api/track/{song['id']}", timeout=20)
+            head = magic.get(fmt)
+            s.check(f"and the {fmt} it serves really is one",
+                    got.status_code == 200
+                    and (head is None or got.content[:4] == head)
+                    and (fmt != "mp3" or got.content[:3] in (b"ID3", b"\xff\xfb")),
+                    str(got.content[:4]))
+            s.check(f"a {fmt} song is one file, not several",
+                    len(list((data / "tracks").glob(f"{song['file'].split('.')[0]}.*")))
+                    == 1)
+        requests.get(f"{api}/api/library", timeout=10)
+
         # -- the audio itself ----------------------------------------------
         track = library[0]
         whole = requests.get(f"{api}/api/track/{track['id']}", timeout=20)
@@ -99,10 +132,12 @@ def run(slow: bool = False) -> Suite:
         s.check("a rename and the browser's measured length both stick",
                 after["title"] == "Renamed" and after["seconds"] == 42.5)
         requests.delete(f"{api}/api/track/{track['id']}", timeout=10)
-        s.check("deleting removes the entry and its audio",
+        s.check("deleting removes the entry and every file it had",
                 not [t for t in requests.get(f"{api}/api/library", timeout=10).json()
                      if t["id"] == track["id"]]
-                and not (data / "tracks" / track["file"]).exists())
+                and not (data / "tracks" / track["file"]).exists()
+                and not (track.get("mp3")
+                         and (data / "tracks" / track["mp3"]).exists()))
 
         # -- refusals people should understand ------------------------------
         s.check("a song with no style is refused",

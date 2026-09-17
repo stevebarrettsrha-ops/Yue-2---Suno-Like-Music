@@ -1,80 +1,23 @@
 """A stand-in ComfyUI: /object_info shaped exactly like v0.35's, plus a queue."""
 import json, threading, time, io, wave, struct, hashlib, base64
+import os, pathlib, shutil, subprocess, tempfile
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-V1 = lambda opts: [opts, {}]                       # nodes.py combo
-V3 = lambda opts: ["COMBO", {"options": opts}]     # comfy_api combo
-
-SAMPLERS = ["euler", "dpm_2", "dpmpp_2m", "ddim"]
-SCHEDULERS = ["normal", "karras", "sgm_uniform", "simple"]
-
-OBJECT_INFO = {
-    "CheckpointLoaderSimple": {"input": {"required": {
-        "ckpt_name": V1(["yue2_3b_int8_convrot.safetensors", "yue2_3b_bf16.safetensors"])}}},
-    "KSampler": {"input": {"required": {
-        "model": ["MODEL"],
-        "seed": ["INT", {"default": 0, "min": 0, "max": 2**64 - 1}],
-        "control_after_generate": V1(["fixed", "increment"]),
-        "steps": ["INT", {"default": 20, "min": 1, "max": 10000}],
-        "cfg": ["FLOAT", {"default": 8.0}],
-        "sampler_name": V1(SAMPLERS),
-        "scheduler": V1(SCHEDULERS),
-        "positive": ["CONDITIONING"], "negative": ["CONDITIONING"],
-        "latent_image": ["LATENT"],
-        "denoise": ["FLOAT", {"default": 1.0}]}}},
-    "YuE2GenerateABC": {"input": {"required": {
-        "clip": ["CLIP"],
-        "style": ["STRING", {"multiline": True, "default": ""}],
-        "lyrics": ["STRING", {"multiline": True, "default": ""}],
-        "seed": ["INT", {"default": 0}],
-        "mode": V3(["full", "melody"]),
-        "max_abc_tokens": ["INT", {"default": 8192}]}}},
-    "YuE2GenerateMusic": {"input": {"required": {
-        "clip": ["CLIP"],
-        "style": ["STRING", {"multiline": True, "default": ""}],
-        "lyrics": ["STRING", {"multiline": True, "default": ""}],
-        "seed": ["INT", {"default": 0}],
-        "mode": V3(["full", "melody"]),
-        "max_duration": ["INT", {"default": 300}],
-        "top_p": ["FLOAT", {"default": 0.95}],
-        "top_k": ["INT", {"default": 100}],
-        "repetition_penalty": ["FLOAT", {"default": 1.2}]},
-        # cfg_scale arrived in ComfyUI 4e779e5, after this graph was written:
-        # optional, with a default, so a builder that reads the schema keeps
-        # working without knowing about it.
-        "optional": {"abc": ["STRING", {"forceInput": True}],
-                     "cfg_scale": ["FLOAT", {"default": 1.0, "min": 0.0,
-                                             "max": 100.0}]}}},
-    "EmptyYuE2LatentAudio": {"input": {"required": {
-        "seconds": ["FLOAT", {"default": 120.0}],
-        "batch_size": ["INT", {"default": 1}]}}},
-    "VAEDecodeAudioTiled": {"input": {"required": {
-        "samples": ["LATENT"], "vae": ["VAE"],
-        "tile_size": ["INT", {"default": 512, "min": 32, "max": 8192}],
-        "overlap": ["INT", {"default": 64, "min": 0, "max": 1024}]}}},
-    "VAEDecodeAudio": {"input": {"required": {"samples": ["LATENT"], "vae": ["VAE"]}}},
-    "SaveAudioAdvanced": {"input": {"required": {
-        "audio": ["AUDIO"],
-        "filename_prefix": ["STRING", {"default": "audio/ComfyUI"}],
-        "format": ["COMBO", {"options": [
-            {"key": "flac", "inputs": {}},
-            {"key": "mp3", "inputs": {"required": {
-                "quality": ["COMBO", {"options": ["V0", "128k", "320k"],
-                                      "default": "V0"}]}}},
-            {"key": "opus", "inputs": {"required": {
-                "quality": ["COMBO", {"options": ["64k", "96k", "128k", "192k", "320k"],
-                                      "default": "128k"}]}}}]}]}}},
-    "SheetSage2AudioToABC": {"input": {"required": {
-        "audio_encoder": ["AUDIO_ENCODER"], "audio": ["AUDIO"],
-        "mode": V3(["melody", "full"])}}},
-    "AudioEncoderLoader": {"input": {"required": {
-        "audio_encoder_name": V3(["sheetsage2_bf16.safetensors"])}}},
-    "LoadAudio": {"input": {"required": {
-        "audio": V3(["ref.wav"]), "start_time": ["FLOAT", {"default": 0.0}]}}},
-    "PreviewAny": {"input": {"required": {"source": ["*", {}]}}},
-}
+# The schema is not written by hand here: it is a capture of what a real
+# ComfyUI answers /object_info with, trimmed to the nodes this graph uses, with
+# the model lists filled in as a set-up install would have them. Hand-written
+# shapes drifted from the real ones — inputs invented, inputs missed, an INT
+# where the real node takes a FLOAT — and a stand-in that disagrees with the
+# thing it stands in for is worth very little.
+#
+#   Refresh it against a real server with:
+#     curl -s http://127.0.0.1:8188/object_info > /tmp/all.json
+#   and re-trim (see the commit that introduced this file).
+OBJECT_INFO = json.loads(
+    (pathlib.Path(__file__).with_name("object_info.json")).read_text())
 
 HISTORY = {}
+FORMATS = {}          # which format each prompt asked to be saved as
 QUEUE_PENDING = []          # prompt_ids waiting
 QUEUE_RUNNING = []          # prompt_ids executing
 LOCK = threading.Lock()
@@ -107,6 +50,39 @@ def wav_bytes(seconds=3.0, rate=8000):
         w.setnchannels(1); w.setsampwidth(2); w.setframerate(rate)
         w.writeframes(b"\x00\x00" * int(rate * seconds))
     return buf.getvalue()
+
+
+_AUDIO: dict = {}
+
+
+def rendered_audio(fmt="flac"):
+    """A render, in whichever format the prompt asked SaveAudioAdvanced for.
+
+    ComfyUI encodes flac, mp3 and opus itself and has no wav encoder at all,
+    so a stand-in that always handed back the same thing would hide both which
+    formats need converting and which do not.
+    """
+    if fmt in _AUDIO:
+        return _AUDIO[fmt]
+    ffmpeg = shutil.which("ffmpeg")
+    made = (wav_bytes(), ".wav")
+    if ffmpeg and fmt in ("flac", "mp3", "opus"):
+        with tempfile.TemporaryDirectory() as tmp:
+            src, dst = f"{tmp}/a.wav", f"{tmp}/a.{fmt}"
+            open(src, "wb").write(wav_bytes())
+            done = subprocess.run([ffmpeg, "-y", "-loglevel", "error",
+                                   "-i", src, dst], capture_output=True)
+            if done.returncode == 0 and os.path.getsize(dst):
+                made = (open(dst, "rb").read(), f".{fmt}")
+    _AUDIO[fmt] = made
+    return made
+
+
+def asked_format(graph):
+    for node in (graph or {}).values():
+        if node.get("class_type") == "SaveAudioAdvanced":
+            return node.get("inputs", {}).get("format", "flac")
+    return "flac"
 
 
 RUN_LOCK = threading.Lock()
@@ -168,8 +144,8 @@ def _execute(pid, graph):
                                            "exception_message": "interrupted"}]]},
                             "outputs": {}}
             return
-    outputs = {"10": {"audio": [{"filename": f"{pid}.wav", "subfolder": "audio",
-                                 "type": "output"}]}}
+    outputs = {"10": {"audio": [{"filename": f"{pid}{rendered_audio(FORMATS.get(pid, 'flac'))[1]}",
+                                 "subfolder": "audio", "type": "output"}]}}
     for nid, node in graph.items():
         if node["class_type"] == "PreviewAny":
             outputs[nid] = {"text": ["X:1\nT:Mock score\nK:C\nCDEF|"]}
@@ -227,7 +203,10 @@ class H(BaseHTTPRequestHandler):
                     "queue_running": [[0, pid, {}, {}, []] for pid in QUEUE_RUNNING],
                     "queue_pending": [[0, pid, {}, {}, []] for pid in QUEUE_PENDING]})
         elif p == "/view":
-            self._send(200, wav_bytes(), "audio/wav")
+            name = self.path.split("filename=")[-1].split("&")[0]
+            fmt = name.rsplit(".", 1)[-1] if "." in name else "flac"
+            data, suffix = rendered_audio(fmt)
+            self._send(200, data, "audio/" + suffix.lstrip("."))
         else:
             self._send(404, {"error": "no route " + p})
 
@@ -246,6 +225,7 @@ class H(BaseHTTPRequestHandler):
                                  "node_errors": bad})
                 return
             pid = f"pid{len(HISTORY) + len(QUEUE_PENDING) + len(QUEUE_RUNNING) + 1}"
+            FORMATS[pid] = asked_format(graph)
             with LOCK:
                 QUEUE_PENDING.append(pid)
             threading.Thread(target=execute, args=(pid, graph), daemon=True).start()
@@ -289,9 +269,11 @@ def validate(graph):
         # exactly as ComfyUI resolves them before validating.
         required_extra = {}
         for name, definition in list(spec.items()):
-            if definition[0] != "COMBO":
+            if not isinstance(definition, list) or isinstance(definition[0], list):
                 continue
             opts = (definition[1] or {}).get("options") or []
+            # A real server types this COMFY_DYNAMICCOMBO_V3, not COMBO; what
+            # marks it out is that its options are whole inputs, not values.
             if not (opts and isinstance(opts[0], dict)):
                 continue
             for option in opts:
@@ -318,14 +300,14 @@ def validate(graph):
                 if value not in kind:
                     node_errs.append({"message": "Value not in list",
                                       "details": f"{name}: {value!r} not in {kind}"})
-            elif kind == "COMBO":
+            elif str(kind).startswith(("COMBO", "COMFY_DYNAMICCOMBO")):
                 opts = (definition[1] or {}).get("options") or []
                 if opts and isinstance(opts[0], dict):
                     keys = [o["key"] for o in opts]
                     if value not in keys:
                         node_errs.append({"message": "Value not in list",
                                           "details": f"{name}: {value!r} not in {keys}"})
-                elif value not in opts:
+                elif opts and value not in opts:
                     node_errs.append({"message": "Value not in list",
                                       "details": f"{name}: {value!r} not in {opts}"})
             elif kind == "INT" and not isinstance(value, int):

@@ -414,6 +414,9 @@ class ComfyClient:
         g["17"] = self._node(decode_class, decode_wanted)
 
         save_spec = self.node_inputs("SaveAudioAdvanced")
+        # Always the lossless one. ComfyUI writes flac, mp3 or opus and no wav
+        # at all, so the song is rendered losslessly here and the wav and mp3
+        # a person keeps are made from it afterwards.
         fmt = p.get("format") or "flac"
         if fmt not in self.save_formats():
             fmt = "flac"

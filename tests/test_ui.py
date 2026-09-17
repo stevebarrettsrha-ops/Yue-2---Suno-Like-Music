@@ -77,6 +77,18 @@ def run(slow: bool = False) -> Suite:
             s.check("clicking it again takes the tag away",
                     page.input_value("#style") == before)
 
+            page.click("#cardMore summary")
+            formats = page.locator("#format option").all_inner_texts()
+            s.check("Save as offers the formats the engine reported",
+                    {"flac", "mp3"} <= set(formats), str(formats))
+            page.select_option("#format", "mp3")
+            page.reload(wait_until="networkidle")
+            page.click('.nav[data-view="create"]')
+            page.click("#cardMore summary")
+            s.equal("and remembers the one picked, for the next song",
+                    page.input_value("#format"), "mp3")
+            page.select_option("#format", formats[0])
+
             page.fill("#lyrics", "[verse]\nsunlight on the water")
             page.click("#btnCreate")
             page.wait_for_selector("#jobList .job", timeout=15000)
