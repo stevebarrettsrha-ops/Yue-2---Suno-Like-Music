@@ -323,6 +323,9 @@ def dependencies(cfg: dict) -> list[dict]:
 # --------------------------------------------------------------------------- #
 # dependency installers
 # --------------------------------------------------------------------------- #
+INSTALLABLE = ("git", "ffmpeg", "python", "comfyui", "torch", "comfy_reqs")
+
+
 def install_dependency(dep_id: str, cfg: dict, opts: dict) -> Task:
     labels = {"git": "Install Git", "comfyui": "Install ComfyUI",
               "torch": "Install PyTorch", "comfy_reqs": "Install ComfyUI packages",
