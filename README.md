@@ -193,4 +193,15 @@ data/          config.json, library.json, tracks/ (created on first run)
 ```
 
 Port: set `YUE_STUDIO_PORT` to move off 7788. Set `YUE_STUDIO_NO_BROWSER=1` to
-stop it opening a browser tab.
+stop it opening a browser tab. Set `YUE_STUDIO_DATA` to keep config, library
+and finished tracks somewhere other than `data/`.
+
+## Tests
+
+```bash
+python tests/run.py
+```
+
+About two minutes, and needs nothing beyond what YuE Studio already installs —
+the browser tests want Playwright and step aside without it. See
+[tests/README.md](tests/README.md).

@@ -22,15 +22,15 @@ from flask import Flask, jsonify, request, send_file, send_from_directory
 
 import bootstrap
 import manager
-from bootstrap import (APP_DIR, ComfyProcess, Progress, clean_url,
+from bootstrap import (ComfyProcess, Progress, clean_url,
                        comfy_online, comfy_port, detect_comfy_dirs,
                        load_config, save_config)
 from comfy import ComfyClient, ComfyError
 
-DATA_DIR = APP_DIR / "data"
+DATA_DIR = bootstrap.DATA_DIR          # honours YUE_STUDIO_DATA
 TRACKS_DIR = DATA_DIR / "tracks"
 LIBRARY_PATH = DATA_DIR / "library.json"
-WEB_DIR = APP_DIR / "web"
+WEB_DIR = bootstrap.APP_DIR / "web"
 PORT = int(os.environ.get("YUE_STUDIO_PORT", "7788"))
 
 app = Flask(__name__, static_folder=None)
