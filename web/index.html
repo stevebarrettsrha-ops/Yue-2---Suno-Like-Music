@@ -438,6 +438,7 @@
             </div></summary>
           <textarea id="lyrics" spellcheck="false"
             placeholder="Start writing lyrics, or leave this empty for instrumental"></textarea>
+          <p class="note" id="lyricsNote" hidden></p>
         </details>
 
         <details class="card" id="cardStyles" open>
@@ -482,13 +483,7 @@
             </div></div></div>
 
           <div class="orow"><span class="lab">Duration <i class="hint">i</i></span>
-            <div class="ctl">
-              <div class="slider" id="durWrap" hidden>
-                <input type="range" id="duration" min="30" max="360" step="10" value="180" />
-                <span class="v" id="durVal">180s</span></div>
-              <div class="segmented" id="segDuration">
-                <button data-v="custom">Custom</button>
-                <button class="on" data-v="auto">Auto</button></div></div></div>
+            <div class="ctl"><select id="duration"></select></div></div>
 
           <div class="orow"><span class="lab">Melody plan <i class="hint">i</i></span>
             <div class="ctl"><div class="segmented" id="segPlan">
@@ -810,7 +805,8 @@ const ALL_TAGS = ["reggae","roots reggae","dancehall","afrobeats","gospel","soul
   "orchestral","synthwave","folk","country","house","drum and bass","ska","calypso",
   "warm female vocal","expressive male vocal","choir","spoken word","74 BPM","90 BPM",
   "120 BPM","acoustic guitar","Rhodes piano","upright bass","brushed drums",
-  "horn section","steel drums","English","Patois","Spanish"];
+  "horn section","steel drums","English","Patois","Spanish",
+  "Hebrew"];
 let chipPool = ALL_TAGS.slice(0, 16);
 function buildChips() {
   const box = $("styleChips"); box.innerHTML = "";
@@ -845,9 +841,13 @@ function wireSeg(id, onChange) {
     segSet(id, b.dataset.v); if (onChange) onChange(b.dataset.v); saveDraft(); }));
 }
 function readOpts() {
-  return { vocal:segGet("segVocal"), durationMode:segGet("segDuration"),
+  const limit = (S.status && S.status.max_duration) || 900;
+  const picked = $("duration").value;
+  return { vocal:segGet("segVocal"),
     plan:segGet("segPlan"), tiled:segGet("segTiled"),
-    duration:Number($("duration").value), steps:Number($("steps").value),
+    durationChoice:picked,
+    duration:picked === "auto" ? limit : Number(picked),
+    steps:Number($("steps").value),
     topp:Number($("topp").value), rep:Number($("rep").value) };
 }
 function saveDraft() {
@@ -862,14 +862,14 @@ function loadDraft() {
   $("abc").value = d.abc || ""; if (d.abc) $("cardAbc").open = true;
   const o = d.opts || {};
   if (o.vocal !== undefined) segSet("segVocal", o.vocal);
-  if (o.durationMode) segSet("segDuration", o.durationMode);
+
   if (o.plan) segSet("segPlan", o.plan);
   if (o.tiled) segSet("segTiled", o.tiled);
-  if (o.duration) { $("duration").value = o.duration; $("durVal").textContent = o.duration+"s"; }
+  if (o.durationChoice) store("yue.duration", o.durationChoice);
   if (o.steps) { $("steps").value = o.steps; $("stepsVal").textContent = o.steps; }
   if (o.topp) { $("topp").value = o.topp; $("toppVal").textContent = (o.topp/100).toFixed(2); }
   if (o.rep) { $("rep").value = o.rep; $("repVal").textContent = (o.rep/100).toFixed(2); }
-  $("durWrap").hidden = segGet("segDuration") !== "custom";
+  lyricsNote();
   const inst = segGet("segVocal") === "instrumental";
   $("lyrics").disabled = inst; $("lyrics").style.opacity = inst ? ".45" : "1";
 }
@@ -946,6 +946,28 @@ function loadScore(t) {
   $("abc").focus();
   toast("Score loaded from “" + t.title + "”. Edit it and press Create.");
 }
+/* YuE2 is handed the lyrics as plain text and sings the letters it reads —
+   there is no pronunciation step anywhere in the graph. Words in a script it
+   was not taught come out as a guess, so say so where they are typed. */
+const SCRIPTS = [
+  [/[\u0590-\u05FF]/, "Hebrew", "שלום → shalom"],
+  [/[\u0600-\u06FF]/, "Arabic", "سلام → salaam"],
+  [/[\u0400-\u04FF]/, "Cyrillic", "спасибо → spa-see-ba"],
+  [/[\u0370-\u03FF]/, "Greek", "ευχαριστώ → ef-ha-ri-sto"],
+  [/[\u0900-\u097F]/, "Devanagari", "नमस्ते → na-mas-tay"],
+];
+function lyricsNote() {
+  const text = $("lyrics").value;
+  const hit = SCRIPTS.find((s) => s[0].test(text));
+  const note = $("lyricsNote");
+  note.hidden = !hit;
+  if (hit) {
+    note.textContent = hit[1] + " letters are sung as the model reads them, "
+      + "and it was not taught this script — write the words the way they "
+      + "sound instead (" + hit[2] + "), and name the language in the style. "
+      + "Hyphens split a word into syllables.";
+  }
+}
 function abcNote() {
   const n = $("abc").value.trim();
   $("abcNote").textContent = n
@@ -994,12 +1016,15 @@ async function rename(t) {
 function reuse(t) {
   $("style").value = t.style || ""; $("lyrics").value = t.lyrics || "";
   $("songTitle").value = t.title || "";
-  if (t.duration) { $("duration").value = t.duration; $("durVal").textContent = t.duration+"s";
-    segSet("segDuration","custom"); $("durWrap").hidden = false; }
+  if (t.duration && [...$("duration").options].some(
+        (o) => o.value === String(t.duration))) {
+    $("duration").value = String(t.duration);
+    store("yue.duration", $("duration").value);
+  }
   if (t.steps) { $("steps").value = t.steps; $("stepsVal").textContent = t.steps; }
   if (t.mode) segSet("segPlan", t.mode);
   if (t.instrumental) segSet("segVocal","instrumental");
-  syncChips(); saveDraft(); show("create");
+  syncChips(); lyricsNote(); saveDraft(); show("create");
   toast("Settings loaded. The seed stays random unless you set it.");
 }
 async function remove(t) {
@@ -1127,7 +1152,7 @@ function collectParams() {
     lyrics: $("lyrics").value,
     title: $("songTitle").value.trim(),
     instrumental: o.vocal === "instrumental",
-    duration: o.durationMode === "auto" ? 240 : o.duration,
+    duration: o.duration,
     mode: o.plan === "none" ? "full" : o.plan,
     use_abc: o.plan !== "none",
     // A score in the box replaces the planning stage entirely.
@@ -1514,6 +1539,7 @@ async function refreshStatus() {
   pill.querySelector("span").textContent = st.ready ? "Engine ready"
     : st.comfy_online ? (st.missing_models.length ? "Models missing" : "Engine loading")
     : "Engine offline";
+  fillDurations(st.max_duration || 900);
   if (st.formats && st.formats.length) {
     const keep = store("yue.format");
     fill($("format"), st.formats, st.formats.indexOf(keep) >= 0 ? keep : "wav");
@@ -1542,6 +1568,24 @@ async function refreshStatus() {
   $("gpuMetric").querySelector("span").textContent =
     st.ready ? "ready" : st.comfy_online ? "loading" : "offline";
   if (!st.setup_complete && $("setupVeil").hidden) openSetup();
+}
+/* Real song lengths rather than a slider of seconds. Auto asks for the longest
+   the engine will make: the node treats it as a ceiling and stops when the
+   song is over, so Auto means "sing all of it" rather than "make it long". */
+function fillDurations(limit) {
+  const sel = $("duration");
+  const keep = sel.value || store("yue.duration") || "auto";
+  sel.innerHTML = "";
+  const auto = document.createElement("option");
+  auto.value = "auto"; auto.textContent = "Auto — until the song ends";
+  sel.appendChild(auto);
+  for (let minutes = 2; minutes * 60 <= limit; minutes++) {
+    const o = document.createElement("option");
+    o.value = String(minutes * 60);
+    o.textContent = minutes + ":00";
+    sel.appendChild(o);
+  }
+  sel.value = [...sel.options].some((o) => o.value === keep) ? keep : "auto";
 }
 function fill(sel, values, preferred) {
   const keep = sel.value; sel.innerHTML = "";
@@ -1585,25 +1629,26 @@ function wire() {
   wireSeg("segVocal", (v) => {
     $("lyrics").disabled = v === "instrumental";
     $("lyrics").style.opacity = v === "instrumental" ? ".45" : "1"; });
-  wireSeg("segDuration", (v) => { $("durWrap").hidden = v !== "custom"; });
   wireSeg("segPlan", null);
   wireSeg("segTiled", null);
 
-  [["duration","durVal",(v) => v + "s"], ["steps","stepsVal",(v) => String(v)],
+  [["steps","stepsVal",(v) => String(v)],
    ["topp","toppVal",(v) => (v/100).toFixed(2)], ["rep","repVal",(v) => (v/100).toFixed(2)]
   ].forEach((row) => $(row[0]).addEventListener("input", (e) => {
     $(row[1]).textContent = row[2](Number(e.target.value)); saveDraft(); }));
 
   $("format").addEventListener("change", () => store("yue.format",
     $("format").value));
+  $("duration").addEventListener("change", () => {
+    store("yue.duration", $("duration").value); saveDraft(); });
   $("btnCount").addEventListener("click", () => {
     S.count = S.count % 4 + 1; $("btnCount").textContent = "×" + S.count; });
   $("btnCreate").addEventListener("click", create);
   $("btnSeedClear").addEventListener("click", () => { $("seed").value = ""; });
   $("btnResetOpts").addEventListener("click", () => {
-    segSet("segVocal",""); segSet("segDuration","auto"); segSet("segPlan","full");
-    segSet("segTiled","on"); $("durWrap").hidden = true;
-    $("duration").value = 180; $("durVal").textContent = "180s";
+    segSet("segVocal",""); segSet("segPlan","full");
+    segSet("segTiled","on");
+    $("duration").value = "auto"; store("yue.duration", "auto");
     $("steps").value = 32; $("stepsVal").textContent = "32";
     $("topp").value = 95; $("toppVal").textContent = "0.95";
     $("rep").value = 120; $("repVal").textContent = "1.20";
@@ -1611,6 +1656,7 @@ function wire() {
     saveDraft(); toast("Back to defaults."); });
 
   $("lyrics").addEventListener("input", () => {
+    lyricsNote();
     S.hist.push($("lyrics").value);
     if (S.hist.length > 60) S.hist.shift();
     S.histAt = S.hist.length - 1; saveDraft(); });
@@ -1743,6 +1789,7 @@ function wire() {
 
 /* ========================= boot ========================= */
 buildChips();
+fillDurations(900);
 loadDraft();
 syncChips();
 abcNote();

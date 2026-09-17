@@ -78,6 +78,20 @@ def run(slow: bool = False) -> Suite:
                     page.input_value("#style") == before)
 
             page.click("#cardMore summary")
+            lengths = page.locator("#duration option").all_inner_texts()
+            s.check("Length is offered as real song lengths",
+                    "3:00" in lengths and "7:00" in lengths
+                    and any("Auto" in l for l in lengths), str(lengths[:4]))
+            s.equal("and Auto is what a new song starts on",
+                    page.input_value("#duration"), "auto")
+            page.select_option("#duration", "300")
+            page.reload(wait_until="networkidle")
+            page.click('.nav[data-view="create"]')
+            page.click("#cardMore summary")
+            s.equal("a chosen length is remembered",
+                    page.input_value("#duration"), "300")
+            page.select_option("#duration", "auto")
+
             formats = page.locator("#format option").all_inner_texts()
             s.check("Save as offers the formats the engine reported",
                     {"flac", "mp3"} <= set(formats), str(formats))
@@ -88,6 +102,19 @@ def run(slow: bool = False) -> Suite:
             s.equal("and remembers the one picked, for the next song",
                     page.input_value("#format"), "mp3")
             page.select_option("#format", formats[0])
+
+            # YuE2 sings the letters it reads, so words in a script it was
+            # never taught need writing the way they sound instead.
+            page.fill("#lyrics", "[verse]\nsunlight on the water")
+            s.check("plain lyrics get no warning about pronunciation",
+                    page.locator("#lyricsNote").is_hidden())
+            page.fill("#lyrics", "[verse]\nשלום עולם")
+            s.check("lyrics in a script the model cannot sing say so",
+                    not page.locator("#lyricsNote").is_hidden()
+                    and "Hebrew" in page.locator("#lyricsNote").inner_text())
+            page.fill("#lyrics", "[verse]\nshalom olam")
+            s.check("and writing them the way they sound clears it",
+                    page.locator("#lyricsNote").is_hidden())
 
             page.fill("#lyrics", "[verse]\nsunlight on the water")
             page.click("#btnCreate")
