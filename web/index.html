@@ -1488,8 +1488,8 @@ async function pollSetup() {
     if (bottom) log.scrollTop = log.scrollHeight;
   }
   const list = $("stepList"); list.innerHTML = "";
-  Object.keys(st.steps).forEach((k) => {
-    const s = st.steps[k], d = document.createElement("div");
+  (st.steps || []).forEach((s) => {
+    const d = document.createElement("div");
     d.className = "step " + s.state;
     d.innerHTML = '<span class="mark">' +
       (s.state === "done" ? "✓" : s.state === "error" ? "!" : "") +

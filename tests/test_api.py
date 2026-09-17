@@ -27,6 +27,19 @@ def run(slow: bool = False) -> Suite:
                 st.get("checkpoints") and st.get("formats") == ["flac", "mp3", "opus"]
                 and st.get("has_cover_model"))
 
+        # -- the setup sheet's steps arrive in the order they happen -------
+        # They are shown as a checklist, so their order is the meaning. Flask
+        # sorts the keys of any dict it sends, which once listed them
+        # alphabetically: Check Python last, Start ComfyUI before the download.
+        steps = requests.get(f"{api}/api/setup/state", timeout=10).json()["steps"]
+        s.check("setup reports its steps as an ordered list",
+                isinstance(steps, list), type(steps).__name__)
+        s.equal("and in the order they really run",
+                [step["label"] for step in steps] if isinstance(steps, list)
+                else list(steps),
+                ["Check Python", "Install ComfyUI", "Install dependencies",
+                 "Download models", "Start ComfyUI"])
+
         # -- a song of every kind, end to end ------------------------------
         upload = requests.post(f"{api}/api/upload-reference",
                                files={"file": ("ref.wav", io.BytesIO(b"RIFFWAVE"),
