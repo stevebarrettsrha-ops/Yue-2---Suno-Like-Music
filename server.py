@@ -195,12 +195,10 @@ def track_files(item: dict) -> list[Path]:
 # --------------------------------------------------------------------------- #
 # what a finished song is saved as
 #
-# ComfyUI can write flac, mp3 or opus, and no wav at all — so it renders the
-# lossless flac and the pair people actually want is made here, from that.
+# ComfyUI writes flac, mp3 and opus itself, so those are rendered straight to
+# the format asked for. It has no wav encoder at all, so a wav is rendered
+# lossless and converted here — the one format that needs ffmpeg.
 # --------------------------------------------------------------------------- #
-SAVE_FORMATS = (("wav", ()), ("mp3", ("-b:a", "320k")))
-
-
 def convert_audio(src: Path, dest: Path, args: tuple = ()) -> bool:
     """Re-encode one file into another. False if ffmpeg cannot or is absent."""
     ffmpeg = shutil.which("ffmpeg")
@@ -216,26 +214,37 @@ def convert_audio(src: Path, dest: Path, args: tuple = ()) -> bool:
             and dest.stat().st_size > 0)
 
 
-def save_as_wav_and_mp3(master: Path, track_id: str) -> dict:
-    """Turn what ComfyUI rendered into the files a song is kept as.
+def available_formats(rendered: list[str]) -> list[str]:
+    """What Save as can offer: what this ComfyUI writes, and wav if we can."""
+    formats = [f for f in rendered if f]
+    if shutil.which("ffmpeg") and "wav" not in formats:
+        formats.insert(1 if formats else 0, "wav")
+    return formats
 
-    Returns what was written. If ffmpeg is not installed nothing is, and the
-    song stays as the lossless file ComfyUI made — playable and downloadable,
-    just not in the two formats asked for, and the Engine page offers to
-    install ffmpeg in one press.
+
+def render_format(wanted: str) -> str:
+    """What to ask ComfyUI for, to end up with what was asked for."""
+    return "flac" if wanted == "wav" else wanted
+
+
+def save_as(master: Path, track_id: str, wanted: str) -> Path:
+    """The file the song is kept as, converting only when we have to.
+
+    Everything but wav comes out of ComfyUI already in the right format. A wav
+    is made from the lossless render, and if there is no ffmpeg to make it
+    with, the song stays as that render — it still plays and downloads, and
+    the Engine page offers to install ffmpeg in one press.
     """
-    made: dict = {}
-    for suffix, args in SAVE_FORMATS:
-        dest = TRACKS_DIR / f"{track_id}.{suffix}"
-        if convert_audio(master, dest, args):
-            made[suffix] = dest.name
-    if made.get("wav"):
-        # The wav holds everything the flac did, so the flac is just a copy.
-        try:
-            master.unlink(missing_ok=True)
-        except OSError:
-            pass
-    return made
+    if wanted != "wav" or master.suffix.lower() == ".wav":
+        return master
+    dest = TRACKS_DIR / f"{track_id}.wav"
+    if not convert_audio(master, dest):
+        return master
+    try:
+        master.unlink(missing_ok=True)      # the wav holds everything it did
+    except OSError:
+        pass
+    return dest
 
 
 def write_library(items: list[dict]) -> None:
@@ -417,6 +426,9 @@ def run_job(job_id: str, params: dict) -> None:
                 kw.setdefault("ended", time.time())
             jobs[job_id].update(kw)
 
+    wanted = (params.get("format") or "flac").lower()
+    params = {**params, "format": render_format(wanted)}
+
     try:
         set_state(stage="Building the graph", pct=2)
         built = client.build_prompt(params)
@@ -508,9 +520,9 @@ def run_job(job_id: str, params: dict) -> None:
                 for chunk in resp.iter_content(1024 * 256):
                     fh.write(chunk)
 
-        set_state(stage="Saving as wav and mp3", pct=96)
-        made = save_as_wav_and_mp3(dest, track_id)
-        playable = TRACKS_DIR / made["wav"] if made.get("wav") else dest
+        if wanted == "wav":
+            set_state(stage="Saving as wav", pct=96)
+        kept = save_as(dest, track_id, wanted)
 
         track = {
             "id": track_id,
@@ -523,7 +535,7 @@ def run_job(job_id: str, params: dict) -> None:
             # back into the slider; seconds is how long the song actually came
             # out, and is what gets shown.
             "duration": params.get("duration"),
-            "seconds": audio_duration(playable),
+            "seconds": audio_duration(kept),
             "mode": params.get("mode"),
             "steps": params.get("steps"),
             "cfg": params.get("cfg"),
@@ -534,8 +546,8 @@ def run_job(job_id: str, params: dict) -> None:
             # read, edited and re-rendered.
             "abc": built["abc_text"] or client.preview_text(prompt_id,
                                                             built["abc_node"]),
-            "file": playable.name,
-            "mp3": made.get("mp3", ""),
+            "file": kept.name,
+            "format": kept.suffix.lstrip(".").lower(),
             "created": time.time(),
         }
         add_track(track)
@@ -589,7 +601,7 @@ def api_status():
             payload["has_cover_model"] = bool(
                 [e for e in client.audio_encoders() if "sheetsage" in e.lower()])
             payload["samplers"], payload["schedulers"] = client.samplers()
-            payload["formats"] = client.save_formats()
+            payload["formats"] = available_formats(client.save_formats())
         except Exception as exc:  # ComfyUI up but too old / still loading
             payload["schema_error"] = str(exc)
     return jsonify(payload)
@@ -769,10 +781,9 @@ def api_library():
 
 @app.get("/api/track/<track_id>")
 def api_track(track_id: str):
-    kind = "mp3" if request.args.get("format") == "mp3" else ""
     for item in read_library():
         if item["id"] == track_id:
-            path = track_file(item, kind)
+            path = track_file(item)
             if path is None or not path.is_file():
                 return jsonify({"error": "Audio file is missing."}), 404
             mime = mimetypes.guess_type(path.name)[0] or "audio/flac"

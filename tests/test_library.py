@@ -126,59 +126,69 @@ def run(slow: bool = False) -> Suite:
                         r.status_code < 500, f"HTTP {r.status_code}")
         s.check("the file outside data/tracks was never touched", outside.exists())
 
-        # -- a song is kept as a wav to play and an mp3 to send ------------
+        # -- a song is kept in the format that was asked for ---------------
         import shutil as _shutil
         import wave as _wave
-        master = data / "master.flac"
         raw = data / "raw.wav"
         with _wave.open(str(raw), "wb") as handle:
             handle.setnchannels(1); handle.setsampwidth(2)
             handle.setframerate(8000)
             handle.writeframes(b"\x00\x00" * 8000 * 2)      # two seconds
-        have_ffmpeg = bool(_shutil.which("ffmpeg"))
-        if have_ffmpeg:
+
+        # ComfyUI writes these itself, so nothing is converted and nothing is
+        # needed to keep them.
+        for fmt in ("flac", "mp3", "opus"):
+            rendered = server.TRACKS_DIR / f"song.{fmt}"
+            rendered.write_bytes(b"whatever ComfyUI rendered")
+            s.equal(f"a song asked for as {fmt} is kept exactly as rendered",
+                    server.save_as(rendered, "song", fmt), rendered)
+            s.check(f"and the {fmt} is still there", rendered.exists())
+        s.equal("only a wav has to be made from the render",
+                [server.render_format(f) for f in ("flac", "mp3", "opus", "wav")],
+                ["flac", "mp3", "opus", "flac"])
+
+        if _shutil.which("ffmpeg"):
+            master = server.TRACKS_DIR / "towav.flac"
             server.convert_audio(raw, master)
-            made = server.save_as_wav_and_mp3(master, "song1")
-            s.check("a rendered song is kept as both a wav and an mp3",
-                    made.get("wav") == "song1.wav" and made.get("mp3") == "song1.mp3",
-                    str(made))
-            s.check("the wav really is one",
-                    (server.TRACKS_DIR / "song1.wav").read_bytes()[:4] == b"RIFF")
-            s.check("the mp3 really is one",
-                    (server.TRACKS_DIR / "song1.mp3").read_bytes()[:3]
-                    in (b"ID3", b"\xff\xfb"))
-            s.check("the lossless file it came from is not kept as well",
+            kept = server.save_as(master, "towav", "wav")
+            s.equal("a song asked for as wav is kept as one", kept.name,
+                    "towav.wav")
+            s.check("and it really is a wav",
+                    kept.read_bytes()[:4] == b"RIFF")
+            s.check("the render it was made from is not kept as well",
                     not master.exists())
-            s.check("and the length is read back off the wav",
-                    abs((server.audio_duration(server.TRACKS_DIR / "song1.wav")
-                         or 0) - 2.0) < 0.05)
+            s.check("its length is read back off the wav",
+                    abs((server.audio_duration(kept) or 0) - 2.0) < 0.05)
+            s.check("wav is offered when ffmpeg can write one",
+                    "wav" in server.available_formats(["flac", "mp3", "opus"]))
         else:
             s.check("ffmpeg is present to test conversion", False,
                     "skipped — no ffmpeg on this machine")
 
-        # Without ffmpeg there is nothing to convert with, and the song must
-        # still survive as whatever ComfyUI rendered.
+        # With no ffmpeg there is no wav to be had, so it is neither offered
+        # nor pretended: the song stays as the lossless render.
         keep = server.shutil.which
         server.shutil.which = lambda name: None
         try:
-            kept = data / "kept.flac"
-            kept.write_bytes(b"not really a flac, but a file")
-            s.equal("with no ffmpeg, nothing is written",
-                    server.save_as_wav_and_mp3(kept, "song2"), {})
-            s.check("and the rendered song is left alone", kept.exists())
+            s.equal("wav is not offered when nothing can write one",
+                    server.available_formats(["flac", "mp3"]), ["flac", "mp3"])
+            stays = server.TRACKS_DIR / "nofmpeg.flac"
+            stays.write_bytes(b"the lossless render")
+            s.equal("and a song asked for as wav stays as the render",
+                    server.save_as(stays, "nofmpeg", "wav"), stays)
+            s.check("with the render still on disk", stays.exists())
         finally:
             server.shutil.which = keep
 
         s.check("a file is never converted onto itself",
                 server.convert_audio(raw, raw) is False)
-
-        both = {"id": "x", "file": "song1.wav", "mp3": "song1.mp3"}
-        s.equal("a song knows about both of its files",
-                sorted(p.name for p in server.track_files(both)),
-                ["song1.mp3", "song1.wav"])
-        s.equal("an older song with just the one still works",
-                [p.name for p in server.track_files({"id": "y", "file": "old.flac"})],
-                ["old.flac"])
+        s.equal("a song with one file knows about that one",
+                [p.name for p in server.track_files({"id": "y", "file": "a.wav"})],
+                ["a.wav"])
+        s.equal("a song made when two were kept still cleans up both",
+                sorted(p.name for p in server.track_files(
+                    {"id": "x", "file": "b.wav", "mp3": "b.mp3"})),
+                ["b.mp3", "b.wav"])
 
         # -- how long a song is --------------------------------------------
         for rate, samples, want in [(44100, 44100 * 185, 185.0),

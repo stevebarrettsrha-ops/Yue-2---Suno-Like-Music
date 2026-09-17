@@ -24,8 +24,9 @@ def run(slow: bool = False) -> Suite:
         s.check("status reports a ready engine",
                 st["ready"] and st["comfy_online"])
         s.check("status offers the checkpoints and formats the page needs",
-                st.get("checkpoints") and st.get("formats") == ["flac", "mp3", "opus"]
-                and st.get("has_cover_model"))
+                bool(st.get("checkpoints"))
+                and {"flac", "mp3", "opus"} <= set(st.get("formats") or [])
+                and st.get("has_cover_model"), str(st.get("formats")))
 
         # -- the setup sheet's steps arrive in the order they happen -------
         # They are shown as a checklist, so their order is the meaning. Flask
@@ -78,29 +79,37 @@ def run(slow: bool = False) -> Suite:
         s.check("the song made without a plan has no score",
                 any(not t["abc"] for t in library))
 
-        # -- every song is kept as a wav and an mp3 -------------------------
+        # -- the format asked for is the format kept ------------------------
         import shutil as _shutil
-        if _shutil.which("ffmpeg"):
-            for song in library:
-                if not s.check(f"{song['title']!r} is kept as a wav",
-                               song.get("file", "").endswith(".wav"),
-                               song.get("file", "")):
-                    continue
-                s.check(f"{song['title']!r} is kept as an mp3 too",
-                        song.get("mp3", "").endswith(".mp3"), song.get("mp3", ""))
-            mp3 = requests.get(f"{api}/api/track/{library[0]['id']}?format=mp3",
-                               timeout=20)
-            s.check("the mp3 is served when it is asked for",
-                    mp3.status_code == 200 and mp3.content[:3] in (b"ID3",
-                                                                   b"\xff\xfb"),
-                    f"HTTP {mp3.status_code}")
-            s.equal("and served as an mp3", mp3.headers.get("Content-Type"),
-                    "audio/mpeg")
-            wav = requests.get(f"{api}/api/track/{library[0]['id']}", timeout=20)
-            s.check("the wav is what plays by default",
-                    wav.content[:4] == b"RIFF", str(wav.content[:4]))
-            s.check("no lossless master is left lying about",
-                    not list((data / "tracks").glob("*.flac")))
+        offered = requests.get(f"{api}/api/status", timeout=10).json()["formats"]
+        s.check("the engine's own formats are offered",
+                {"flac", "mp3"} <= set(offered), str(offered))
+        s.equal("wav is offered exactly when ffmpeg can write one",
+                "wav" in offered, bool(_shutil.which("ffmpeg")))
+
+        magic = {"flac": b"fLaC", "wav": b"RIFF", "opus": b"OggS"}
+        for fmt in offered:
+            requests.post(f"{api}/api/generate",
+                          json={"style": f"a {fmt} song", "lyrics": "x",
+                                "format": fmt}, timeout=20)
+            finish_jobs(api, 60)
+            song = requests.get(f"{api}/api/library", timeout=10).json()[0]
+            if not s.check(f"a song asked for as {fmt} is saved as one",
+                           song.get("file", "").endswith(f".{fmt}")
+                           and song.get("format") == fmt,
+                           song.get("file", "")):
+                continue
+            got = requests.get(f"{api}/api/track/{song['id']}", timeout=20)
+            head = magic.get(fmt)
+            s.check(f"and the {fmt} it serves really is one",
+                    got.status_code == 200
+                    and (head is None or got.content[:4] == head)
+                    and (fmt != "mp3" or got.content[:3] in (b"ID3", b"\xff\xfb")),
+                    str(got.content[:4]))
+            s.check(f"a {fmt} song is one file, not several",
+                    len(list((data / "tracks").glob(f"{song['file'].split('.')[0]}.*")))
+                    == 1)
+        requests.get(f"{api}/api/library", timeout=10)
 
         # -- the audio itself ----------------------------------------------
         track = library[0]

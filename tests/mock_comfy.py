@@ -76,6 +76,7 @@ OBJECT_INFO = {
 }
 
 HISTORY = {}
+FORMATS = {}          # which format each prompt asked to be saved as
 QUEUE_PENDING = []          # prompt_ids waiting
 QUEUE_RUNNING = []          # prompt_ids executing
 LOCK = threading.Lock()
@@ -110,31 +111,37 @@ def wav_bytes(seconds=3.0, rate=8000):
     return buf.getvalue()
 
 
-def rendered_audio():
-    """What a render comes out as: flac, the way ComfyUI writes it.
+_AUDIO: dict = {}
 
-    ComfyUI has no wav encoder at all, so a stand-in that handed back wav
-    would skip the very conversion the app does. Falls back to wav where
-    there is no ffmpeg to make a flac with, which is the case the app is
-    meant to survive anyway.
+
+def rendered_audio(fmt="flac"):
+    """A render, in whichever format the prompt asked SaveAudioAdvanced for.
+
+    ComfyUI encodes flac, mp3 and opus itself and has no wav encoder at all,
+    so a stand-in that always handed back the same thing would hide both which
+    formats need converting and which do not.
     """
-    global _AUDIO
-    if _AUDIO is not None:
-        return _AUDIO
+    if fmt in _AUDIO:
+        return _AUDIO[fmt]
     ffmpeg = shutil.which("ffmpeg")
-    _AUDIO = (wav_bytes(), ".wav")
-    if ffmpeg:
+    made = (wav_bytes(), ".wav")
+    if ffmpeg and fmt in ("flac", "mp3", "opus"):
         with tempfile.TemporaryDirectory() as tmp:
-            src, dst = f"{tmp}/a.wav", f"{tmp}/a.flac"
+            src, dst = f"{tmp}/a.wav", f"{tmp}/a.{fmt}"
             open(src, "wb").write(wav_bytes())
             done = subprocess.run([ffmpeg, "-y", "-loglevel", "error",
                                    "-i", src, dst], capture_output=True)
             if done.returncode == 0 and os.path.getsize(dst):
-                _AUDIO = (open(dst, "rb").read(), ".flac")
-    return _AUDIO
+                made = (open(dst, "rb").read(), f".{fmt}")
+    _AUDIO[fmt] = made
+    return made
 
 
-_AUDIO = None
+def asked_format(graph):
+    for node in (graph or {}).values():
+        if node.get("class_type") == "SaveAudioAdvanced":
+            return node.get("inputs", {}).get("format", "flac")
+    return "flac"
 
 
 RUN_LOCK = threading.Lock()
@@ -196,7 +203,7 @@ def _execute(pid, graph):
                                            "exception_message": "interrupted"}]]},
                             "outputs": {}}
             return
-    outputs = {"10": {"audio": [{"filename": f"{pid}{rendered_audio()[1]}",
+    outputs = {"10": {"audio": [{"filename": f"{pid}{rendered_audio(FORMATS.get(pid, 'flac'))[1]}",
                                  "subfolder": "audio", "type": "output"}]}}
     for nid, node in graph.items():
         if node["class_type"] == "PreviewAny":
@@ -255,9 +262,10 @@ class H(BaseHTTPRequestHandler):
                     "queue_running": [[0, pid, {}, {}, []] for pid in QUEUE_RUNNING],
                     "queue_pending": [[0, pid, {}, {}, []] for pid in QUEUE_PENDING]})
         elif p == "/view":
-            data, suffix = rendered_audio()
-            self._send(200, data,
-                       "audio/flac" if suffix == ".flac" else "audio/wav")
+            name = self.path.split("filename=")[-1].split("&")[0]
+            fmt = name.rsplit(".", 1)[-1] if "." in name else "flac"
+            data, suffix = rendered_audio(fmt)
+            self._send(200, data, "audio/" + suffix.lstrip("."))
         else:
             self._send(404, {"error": "no route " + p})
 
@@ -276,6 +284,7 @@ class H(BaseHTTPRequestHandler):
                                  "node_errors": bad})
                 return
             pid = f"pid{len(HISTORY) + len(QUEUE_PENDING) + len(QUEUE_RUNNING) + 1}"
+            FORMATS[pid] = asked_format(graph)
             with LOCK:
                 QUEUE_PENDING.append(pid)
             threading.Thread(target=execute, args=(pid, graph), daemon=True).start()
