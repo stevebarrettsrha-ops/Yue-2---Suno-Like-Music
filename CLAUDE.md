@@ -57,6 +57,11 @@ node --check /tmp/app.js
 A missing function declaration in the inline script kills all interactivity
 silently — `node --check` is not optional.
 
+`python tests/run.py` runs that gate and everything else (311 checks, about two
+minutes); `python tests/run.py gate` is just the block above. Run the whole
+suite before pushing. Tests take their own port and their own `YUE_STUDIO_DATA`
+directory, so they never touch a real library.
+
 ## What the UI maps onto
 
 Every control in More Options is a real YuE2 or KSampler input — no decorative

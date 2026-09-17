@@ -1,0 +1,292 @@
+"""bootstrap.py and manager.py — finding Python, addresses, and model files."""
+
+from __future__ import annotations
+
+import os
+import shutil
+import sys
+import threading
+import time
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+import bootstrap                                   # noqa: E402
+import manager                                     # noqa: E402
+from harness import Suite, Workspace, free_port    # noqa: E402
+
+# A stand-in interpreter: answers the probes find_python and existing_python run.
+STUB = """#!/bin/sh
+case "$2" in
+  *find_spec*)  echo %(torch)s ;;
+  *"import torch"*)
+      [ "%(torch)s" = "True" ] || exit 1
+      echo '{"v": "2.6.0+cu128", "cuda": true, "dev": "RTX 4090"}' ;;
+  *safetensors*) [ "%(torch)s" = "True" ] || exit 1; echo ok ;;
+  *) echo unknown ;;
+esac
+exit 0
+"""
+
+
+def run(slow: bool = False) -> Suite:
+    s = Suite("setup")
+
+    # -- addresses people type, and the port we start ComfyUI on -----------
+    for raw, url, port in [
+            ("http://127.0.0.1:8188/", "http://127.0.0.1:8188", 8188),
+            ("http://127.0.0.1:8188", "http://127.0.0.1:8188", 8188),
+            ("localhost:9000", "http://localhost:9000", 9000),
+            ("  http://a:9000//  ", "http://a:9000", 9000),
+            ("https://box.lan:8188/", "https://box.lan:8188", 8188),
+            ("http://[::1]:8188/", "http://[::1]:8188", 8188),
+            ("http://192.168.1.5", "http://192.168.1.5", 8188)]:
+        s.check(f"{raw.strip()!r} is usable", bootstrap.clean_url(raw) == url,
+                repr(bootstrap.clean_url(raw)))
+        s.check(f"{raw.strip()!r} starts ComfyUI on {port}",
+                bootstrap.comfy_port(raw) == port, str(bootstrap.comfy_port(raw)))
+    for junk in (8188, None, [], {"a": 1}, True, "", "   ", "not a url",
+                 "file:///etc"):
+        s.check(f"{junk!r} is refused rather than half-applied",
+                bootstrap.clean_url(junk) == "")
+    s.check("a port-less address still yields a port to start on",
+            bootstrap.comfy_port("http://host") == 8188)
+
+    # -- an existing ComfyUI runs on its own interpreter, not ours ---------
+    layouts = [("a venv inside ComfyUI", "venv/bin/python", True),
+               ("a uv .venv inside", ".venv/bin/python", True),
+               ("a sibling standalone runtime",
+                "../python_standalone/bin/python", True),
+               ("a sibling venv", "../venv/bin/python", True),
+               ("an environment with no torch", "venv/bin/python", False),
+               ("no environment we can find", None, False)]
+    for label, rel, has_torch in layouts:
+        with Workspace() as root:
+            comfy_dir = root / "ComfyUI"
+            (comfy_dir / "models" / "checkpoints").mkdir(parents=True)
+            (comfy_dir / "models" / "audio_encoders").mkdir(parents=True)
+            (comfy_dir / "main.py").write_text("# theirs\n")
+            (comfy_dir / "requirements.txt").write_text("safetensors\n")
+            for rel_model, *_ in bootstrap.MODELS:
+                (comfy_dir / "models" / rel_model).write_bytes(b"0")
+            theirs = None
+            if rel:
+                theirs = Path(os.path.normpath(comfy_dir / rel))
+                theirs.parent.mkdir(parents=True, exist_ok=True)
+                theirs.write_text(STUB % {"torch": "True" if has_torch else "False"})
+                theirs.chmod(0o755)
+
+            found = bootstrap.existing_python(comfy_dir)
+            s.check(f"{label}: the install's own interpreter is found",
+                    found == (str(theirs) if theirs else ""), found or "(none)")
+
+            cfg = {**bootstrap.DEFAULT_CONFIG, "managed": False,
+                   "comfy_dir": str(comfy_dir),
+                   "models_dir": str(comfy_dir / "models"),
+                   "comfy_url": "http://127.0.0.1:1", "python": ""}
+            deps = {d["id"]: d for d in manager.dependencies(cfg)}
+            s.check(f"{label}: no Install button for an install we did not make",
+                    deps["torch"]["action"] is None
+                    and deps["comfy_reqs"]["action"] is None)
+            for dep in ("torch", "comfy_reqs"):
+                s.fails_with(f"{label}: installing {dep} into it is refused",
+                             lambda d=dep: manager.install_dependency(d, cfg, {}),
+                             RuntimeError, "not installed by YuE Studio")
+
+    # -- a managed install is still ours to set up -------------------------
+    with Workspace() as root:
+        comfy_dir = root / "ComfyUI"
+        (comfy_dir / "models").mkdir(parents=True)
+        (comfy_dir / "main.py").write_text("#\n")
+        (comfy_dir / "requirements.txt").write_text("safetensors\n")
+        cfg = {**bootstrap.DEFAULT_CONFIG, "managed": True,
+               "comfy_dir": str(comfy_dir), "models_dir": str(comfy_dir / "models"),
+               "comfy_url": "http://127.0.0.1:1"}
+        deps = {d["id"]: d for d in manager.dependencies(cfg)}
+        s.check("a managed install still offers to install PyTorch",
+                deps["torch"]["action"] == "install"
+                and deps["comfy_reqs"]["action"] == "install")
+
+    # -- deleting a model file ---------------------------------------------
+    with Workspace() as root:
+        models = root / "models"
+        for folder in ("checkpoints", "audio_encoders"):
+            (models / folder).mkdir(parents=True)
+        (models / "checkpoints" / "real.safetensors").write_bytes(b"0" * 10)
+        outside = root / "outside"; outside.mkdir()
+        secret = outside / "secret.safetensors"; secret.write_bytes(b"precious")
+        cfg = {"models_dir": str(models)}
+
+        for folder, name, why in [
+                ("checkpoints", "../../outside/secret.safetensors", "climbing out"),
+                ("checkpoints", "..", "naming the folder above"),
+                ("checkpoints", ".", "naming the folder itself"),
+                ("../outside", "secret.safetensors", "a folder off the list"),
+                ("etc", "passwd", "a folder that is not a model folder"),
+                ("checkpoints", "", "an empty name")]:
+            s.fails_with(f"deleting refuses {why}",
+                         lambda f=folder, n=name: manager.delete_model(cfg, f, n),
+                         RuntimeError, "not allowed")
+        s.check("the file outside the models folder is untouched", secret.exists())
+
+        manager.delete_model(cfg, "checkpoints", "real.safetensors")
+        s.check("a real model file does delete",
+                not (models / "checkpoints" / "real.safetensors").exists())
+        s.fails_with("deleting something already gone says so",
+                     lambda: manager.delete_model(cfg, "checkpoints", "real.safetensors"),
+                     RuntimeError, "already gone")
+
+        # a model file that is a symlink loses the link, not the target
+        shared = outside / "shared.safetensors"; shared.write_bytes(b"shared")
+        link = models / "checkpoints" / "linked.safetensors"
+        link.symlink_to(shared)
+        manager.delete_model(cfg, "checkpoints", "linked.safetensors")
+        s.check("deleting a symlinked model removes the link, keeps the target",
+                not link.is_symlink() and shared.exists())
+
+        # big model folders are often symlinked onto another drive
+        elsewhere = root / "bigdisk" / "checkpoints"
+        elsewhere.mkdir(parents=True)
+        (elsewhere / "onbig.safetensors").write_bytes(b"0")
+        shutil.rmtree(models / "audio_encoders")
+        (models / "audio_encoders").symlink_to(elsewhere, target_is_directory=True)
+        manager.delete_model(cfg, "audio_encoders", "onbig.safetensors")
+        s.check("a models folder symlinked to another drive still works",
+                not (elsewhere / "onbig.safetensors").exists())
+
+    # -- downloads: resumable, and honest about progress -------------------
+    body = bytes(range(256)) * 8000
+    for honours_range in (True, False):
+        port = free_port()
+        served = {"n": 0}
+
+        class Handler(BaseHTTPRequestHandler):
+            def log_message(self, *a): pass
+            def do_GET(self):
+                rng = self.headers.get("Range") if honours_range else None
+                start = int(rng.split("=")[1].split("-")[0]) if rng else 0
+                chunk = body[start:]
+                self.send_response(206 if rng else 200)
+                if rng:
+                    self.send_header("Content-Range",
+                                     f"bytes {start}-{len(body)-1}/{len(body)}")
+                self.send_header("Content-Length", str(len(chunk)))
+                self.end_headers()
+                sent = 0
+                try:
+                    while sent < len(chunk):
+                        self.wfile.write(chunk[sent:sent + 200_000])
+                        sent += 200_000
+                        served["n"] += 200_000
+                        time.sleep(0.05)
+                except OSError:
+                    pass
+
+        srv = ThreadingHTTPServer(("127.0.0.1", port), Handler)
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        with Workspace() as root:
+            dest = root / "model.safetensors"
+            part = dest.with_suffix(dest.suffix + ".part")
+            part.write_bytes(body[:1_600_000])          # an interrupted attempt
+            task = manager.Task("download", "model")
+            seen: list[float] = []
+            original = task.set
+            task.set = lambda **kw: (seen.append(kw.get("pct")), original(**kw))[1]
+            manager._stream_download(f"http://127.0.0.1:{port}/m", dest, task, {})
+            label = "honouring Range" if honours_range else "ignoring Range"
+            s.check(f"a resumed download ({label}) rebuilds the file exactly",
+                    dest.read_bytes() == body)
+            s.check(f"a resumed download ({label}) never leaves a .part behind",
+                    not part.exists())
+            percentages = [p for p in seen if p]
+            s.check(f"a resumed download ({label}) reports progress that reaches 100",
+                    not percentages or max(percentages) >= 99.9,
+                    f"peaked at {max(percentages) if percentages else 0:.1f}%")
+        srv.shutdown()
+
+    # -- a .part that is already the whole file ----------------------------
+    port = free_port()
+
+    class Complete(BaseHTTPRequestHandler):
+        def log_message(self, *a): pass
+        def do_GET(self):
+            self.send_response(416)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+
+    srv = ThreadingHTTPServer(("127.0.0.1", port), Complete)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    with Workspace() as root:
+        for who, call in (("setup", lambda d, p: bootstrap.download(
+                               f"http://127.0.0.1:{port}/f", d,
+                               bootstrap.Progress(), "models", "f")),
+                          ("the models page", lambda d, p: manager._stream_download(
+                               f"http://127.0.0.1:{port}/f", d,
+                               manager.Task("download", "f"), {}))):
+            dest = root / f"{who}.safetensors"
+            dest.write_bytes(b"an older copy")
+            part = dest.with_suffix(dest.suffix + ".part")
+            part.write_bytes(b"the finished download")
+            call(dest, part)
+            s.check(f"{who}: a complete .part replaces the file it finishes",
+                    dest.read_bytes() == b"the finished download"
+                    and not part.exists())
+    srv.shutdown()
+
+    # -- huggingface answers of every kind ---------------------------------
+    port = free_port()
+    mode = {"v": "ok"}
+
+    class HF(BaseHTTPRequestHandler):
+        def log_message(self, *a): pass
+        def do_GET(self):
+            import json as _json
+            kind = "models" if "/api/models/" in self.path else "datasets"
+            codes = {"gated": 401, "noaccess": 403, "missing": 404,
+                     "server-error": 500}
+            code = codes.get(mode["v"])
+            if mode["v"] == "dataset-only" and kind == "models":
+                code = 404
+            body = _json.dumps({"error": mode["v"]} if code else [
+                {"type": "file", "path": "checkpoints/big.safetensors",
+                 "lfs": {"size": 3_960_000_000}},
+                {"type": "directory", "path": "checkpoints"},
+                {"type": "file", "path": "README.md", "size": 1200}]).encode()
+            self.send_response(code or 200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+    srv = ThreadingHTTPServer(("127.0.0.1", port), HF)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    cfg = {"hf_endpoint": f"http://127.0.0.1:{port}"}
+    listing = manager.hf_list(cfg, "Comfy-Org/YuE2")
+    s.check("a normal repo lists only its files",
+            [f["path"] for f in listing["files"]]
+            == ["checkpoints/big.safetensors", "README.md"])
+    mode["v"] = "dataset-only"
+    s.equal("a dataset repo is found after models comes back empty",
+            manager.hf_list(cfg, "x/y")["kind"], "datasets")
+    for state, says in [("gated", "needs a huggingface token"),
+                        ("noaccess", "cannot read this repo"),
+                        ("missing", "could not find"),
+                        ("server-error", "try again in a moment")]:
+        mode["v"] = state
+        s.fails_with(f"a {state} repo is explained, not dumped",
+                     lambda: manager.hf_list(cfg, "x/y"), RuntimeError, says)
+    srv.shutdown()
+
+    s.check("a folder is guessed from the path",
+            [manager.guess_folder(p) for p in
+             ("checkpoints/a.safetensors", "audio_encoders/e.safetensors",
+              "some/vae/x.safetensors", "my_lora.safetensors", "sheetsage2.bin")]
+            == ["checkpoints", "audio_encoders", "vae", "loras", "audio_encoders"])
+    return s
+
+
+if __name__ == "__main__":
+    suite = run("--slow" in sys.argv)
+    print(f"\n{suite.name}: {suite.passed} passed, {len(suite.failures)} failed")
+    sys.exit(1 if suite.failures else 0)

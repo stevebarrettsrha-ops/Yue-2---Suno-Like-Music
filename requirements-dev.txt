@@ -1,0 +1,6 @@
+# Only for the browser tests. Everything else in tests/ runs on what
+# requirements.txt already installs.
+#
+#   pip install -r requirements-dev.txt
+#   python -m playwright install chromium
+playwright>=1.40

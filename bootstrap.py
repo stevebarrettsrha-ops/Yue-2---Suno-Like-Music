@@ -29,7 +29,10 @@ from urllib.parse import urlsplit
 import requests
 
 APP_DIR = Path(__file__).resolve().parent
-DATA_DIR = APP_DIR / "data"
+# Config, library and finished tracks. YUE_STUDIO_DATA moves the lot, which
+# lets a second copy run without touching the first one's songs — the test
+# suite relies on it, and so does anyone keeping their library on another disk.
+DATA_DIR = Path(os.environ.get("YUE_STUDIO_DATA") or (APP_DIR / "data"))
 CONFIG_PATH = DATA_DIR / "config.json"
 
 COMFY_REPO = "https://github.com/comfyanonymous/ComfyUI.git"
