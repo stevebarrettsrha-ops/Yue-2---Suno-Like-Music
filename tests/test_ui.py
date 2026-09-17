@@ -316,6 +316,11 @@ def run(slow: bool = False) -> Suite:
                     s.check("every step of setup finishes green",
                             page.locator("#stepList .step.done").count() == 5,
                             f"{page.locator('#stepList .step.done').count()} of 5")
+                    s.equal("the steps read down the sheet in the order they run",
+                            page.locator("#stepList .lbl").all_inner_texts(),
+                            ["Check Python", "Install ComfyUI",
+                             "Install dependencies", "Download models",
+                             "Start ComfyUI"])
                     s.check("the log says so too",
                             "Setup complete" in
                             page.locator("#setupLog").inner_text())

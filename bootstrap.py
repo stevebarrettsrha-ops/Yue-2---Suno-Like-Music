@@ -196,7 +196,13 @@ class Progress:
                 "done": self.done,
                 "error": self.error,
                 "step": self.step,
-                "steps": json.loads(json.dumps(self.steps)),
+                # A list, in the order the steps actually happen. This used to
+                # be the dict itself, and Flask sorts the keys of every dict it
+                # sends — which listed Check Python last, after the step that
+                # starts the engine, on the one screen where order is the whole
+                # point.
+                "steps": [{"key": key, **self.steps[key]}
+                          for key, _ in self.STEPS],
                 "cursor": len(self.lines),
                 "lines": self.lines[since:],
             }
