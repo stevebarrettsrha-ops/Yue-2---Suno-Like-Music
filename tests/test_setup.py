@@ -163,7 +163,7 @@ def run(slow: bool = False) -> Suite:
     s.check("a Downloading line is remembered, not shown as progress",
             bootstrap.pip_progress(
                 "Downloading torch-2.11.0%2Bcu128-cp312-win_amd64.whl (2753.2 MB)",
-                state) is None and state.get("what") == "torch")
+                state) is None and state.get("what") == "Downloading torch")
     state["since"] = time.time() - 60
     told = bootstrap.pip_progress("Progress 1288490188 of 2887193395", state)
     s.check("a Progress line becomes something worth reading",
@@ -172,9 +172,26 @@ def run(slow: bool = False) -> Suite:
     s.check("and carries a speed and a time left",
             "MB/s" in (told or "") and "left" in (told or ""))
     small = bootstrap.pip_progress("Progress 8000000 of 16000000",
-                                   {"what": "numpy", "since": time.time() - 1})
+                                   {"what": "numpy", "since": time.time() - 2})
     s.check("a small file is measured in MB, not 0.01 GB",
             "8 of 16 MB" in (small or ""), small or "(nothing)")
+    rushed = bootstrap.pip_progress("Progress 1288490188 of 2887193395",
+                                    {"what": "torch", "since": time.time()})
+    s.check("a rate is not quoted before there is time to measure one",
+            "MB/s" not in (rushed or "") and "44%" in (rushed or ""),
+            rushed or "(nothing)")
+
+    # Once pip stops downloading it says nothing for minutes while it unpacks.
+    # The clock has to name that, or it reads as the last file being stuck.
+    phases: dict = {}
+    bootstrap.pip_progress("Downloading numpy-2.5.2-cp312-win_amd64.whl (12.5 MB)",
+                           phases)
+    s.check("while fetching, the clock names the file",
+            phases["what"] == "Downloading numpy")
+    bootstrap.pip_progress("Installing collected packages: torch, torchvision",
+                           phases)
+    s.check("once unpacking starts, the clock says so instead",
+            "Unpacking" in phases["what"], phases["what"])
     for junk in ("Progress", "Progress x of y", "Collecting scipy", ""):
         s.check(f"pip output {junk!r} is not mistaken for progress",
                 bootstrap.pip_progress(junk, {}) is None)
