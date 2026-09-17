@@ -89,6 +89,19 @@ def run(slow: bool = False) -> Suite:
                     page.input_value("#format"), "mp3")
             page.select_option("#format", formats[0])
 
+            # YuE2 sings the letters it reads, so words in a script it was
+            # never taught need writing the way they sound instead.
+            page.fill("#lyrics", "[verse]\nsunlight on the water")
+            s.check("plain lyrics get no warning about pronunciation",
+                    page.locator("#lyricsNote").is_hidden())
+            page.fill("#lyrics", "[verse]\nשלום עולם")
+            s.check("lyrics in a script the model cannot sing say so",
+                    not page.locator("#lyricsNote").is_hidden()
+                    and "Hebrew" in page.locator("#lyricsNote").inner_text())
+            page.fill("#lyrics", "[verse]\nshalom olam")
+            s.check("and writing them the way they sound clears it",
+                    page.locator("#lyricsNote").is_hidden())
+
             page.fill("#lyrics", "[verse]\nsunlight on the water")
             page.click("#btnCreate")
             page.wait_for_selector("#jobList .job", timeout=15000)

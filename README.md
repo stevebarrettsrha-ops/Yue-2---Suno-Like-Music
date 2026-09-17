@@ -113,6 +113,28 @@ Leave lyrics empty, or switch Instrumental on, for a vocal-free track.
   `sgm_uniform` matches the reference workflow.
 - *Seed* — leave blank for random, or fix it to re-roll a song with one change.
 - *Tiled decode* — leave on unless you have plenty of VRAM; off is faster.
+### Words it cannot say
+
+YuE2 is handed the lyrics as plain text and sings the letters it reads — there
+is no pronunciation step, no phoneme conversion and no language setting
+anywhere in the graph. A word in a script it was never trained on comes out as
+a guess.
+
+The fix is to write the word the way it sounds, in Latin letters, and to name
+the language in the style:
+
+```
+Style:   Hebrew, roots reggae, warm male vocal, 74 BPM
+Lyrics:  [verse]
+         shalom, ma nishma            (שלום, מה נשמע)
+         le-cha-yim                   hyphens split the syllables
+```
+
+Anything still mangled is usually a spelling problem rather than a model
+problem: spell it as an English speaker would read it aloud, and break long
+words with hyphens to control where the syllables land. The lyrics box says so
+by itself when it sees a script the model is unlikely to sing.
+
 - *Save as* — one file per song, in the format you pick. `flac` keeps
   everything, `mp3` is the one to send someone, and `wav` plays anywhere.
   ComfyUI writes flac, mp3 and opus itself; it has no wav encoder, so a wav is

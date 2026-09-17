@@ -438,6 +438,7 @@
             </div></summary>
           <textarea id="lyrics" spellcheck="false"
             placeholder="Start writing lyrics, or leave this empty for instrumental"></textarea>
+          <p class="note" id="lyricsNote" hidden></p>
         </details>
 
         <details class="card" id="cardStyles" open>
@@ -810,7 +811,8 @@ const ALL_TAGS = ["reggae","roots reggae","dancehall","afrobeats","gospel","soul
   "orchestral","synthwave","folk","country","house","drum and bass","ska","calypso",
   "warm female vocal","expressive male vocal","choir","spoken word","74 BPM","90 BPM",
   "120 BPM","acoustic guitar","Rhodes piano","upright bass","brushed drums",
-  "horn section","steel drums","English","Patois","Spanish"];
+  "horn section","steel drums","English","Patois","Spanish",
+  "Hebrew"];
 let chipPool = ALL_TAGS.slice(0, 16);
 function buildChips() {
   const box = $("styleChips"); box.innerHTML = "";
@@ -869,6 +871,7 @@ function loadDraft() {
   if (o.steps) { $("steps").value = o.steps; $("stepsVal").textContent = o.steps; }
   if (o.topp) { $("topp").value = o.topp; $("toppVal").textContent = (o.topp/100).toFixed(2); }
   if (o.rep) { $("rep").value = o.rep; $("repVal").textContent = (o.rep/100).toFixed(2); }
+  lyricsNote();
   $("durWrap").hidden = segGet("segDuration") !== "custom";
   const inst = segGet("segVocal") === "instrumental";
   $("lyrics").disabled = inst; $("lyrics").style.opacity = inst ? ".45" : "1";
@@ -946,6 +949,28 @@ function loadScore(t) {
   $("abc").focus();
   toast("Score loaded from “" + t.title + "”. Edit it and press Create.");
 }
+/* YuE2 is handed the lyrics as plain text and sings the letters it reads —
+   there is no pronunciation step anywhere in the graph. Words in a script it
+   was not taught come out as a guess, so say so where they are typed. */
+const SCRIPTS = [
+  [/[\u0590-\u05FF]/, "Hebrew", "שלום → shalom"],
+  [/[\u0600-\u06FF]/, "Arabic", "سلام → salaam"],
+  [/[\u0400-\u04FF]/, "Cyrillic", "спасибо → spa-see-ba"],
+  [/[\u0370-\u03FF]/, "Greek", "ευχαριστώ → ef-ha-ri-sto"],
+  [/[\u0900-\u097F]/, "Devanagari", "नमस्ते → na-mas-tay"],
+];
+function lyricsNote() {
+  const text = $("lyrics").value;
+  const hit = SCRIPTS.find((s) => s[0].test(text));
+  const note = $("lyricsNote");
+  note.hidden = !hit;
+  if (hit) {
+    note.textContent = hit[1] + " letters are sung as the model reads them, "
+      + "and it was not taught this script — write the words the way they "
+      + "sound instead (" + hit[2] + "), and name the language in the style. "
+      + "Hyphens split a word into syllables.";
+  }
+}
 function abcNote() {
   const n = $("abc").value.trim();
   $("abcNote").textContent = n
@@ -999,7 +1024,7 @@ function reuse(t) {
   if (t.steps) { $("steps").value = t.steps; $("stepsVal").textContent = t.steps; }
   if (t.mode) segSet("segPlan", t.mode);
   if (t.instrumental) segSet("segVocal","instrumental");
-  syncChips(); saveDraft(); show("create");
+  syncChips(); lyricsNote(); saveDraft(); show("create");
   toast("Settings loaded. The seed stays random unless you set it.");
 }
 async function remove(t) {
@@ -1611,6 +1636,7 @@ function wire() {
     saveDraft(); toast("Back to defaults."); });
 
   $("lyrics").addEventListener("input", () => {
+    lyricsNote();
     S.hist.push($("lyrics").value);
     if (S.hist.length > 60) S.hist.shift();
     S.histAt = S.hist.length - 1; saveDraft(); });
