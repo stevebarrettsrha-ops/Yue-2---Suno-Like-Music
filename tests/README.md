@@ -35,12 +35,36 @@ Every test gets a free port and its own data directory through
 runs cannot collide. Servers are started and stopped by `harness.py`, whatever
 happens in the test.
 
-`mock_comfy.py` stands in for ComfyUI. It serves `/object_info` shaped the way
-the real thing shapes it — V1 combos for the core loaders, V3 for the YuE2 and
-audio nodes, and a dynamic combo for `SaveAudioAdvanced.format` — runs one
-prompt at a time behind a real queue, speaks the progress websocket, and
-validates every prompt the way ComfyUI does. A prompt it accepts is one the
-real server would have accepted too.
+`mock_comfy.py` stands in for ComfyUI. Its `/object_info` is not written by
+hand: `object_info.json` is a capture from a real server, trimmed to the nodes
+this graph uses, so the three combo shapes, the dynamic `format` input and
+every default are the real ones. It runs one prompt at a time behind a real
+queue, speaks the progress websocket, encodes whichever format the prompt asked
+for, and validates every prompt the way ComfyUI does — so a prompt it accepts
+is one the real server accepts too. That last claim was checked directly:
+every graph this app builds was queued against a real ComfyUI 0.36.0 and
+accepted.
+
+To refresh the capture against a newer ComfyUI, start one and run:
+
+```bash
+python - <<'EOF'
+import json, requests, pathlib
+NEEDED = ["CheckpointLoaderSimple", "KSampler", "YuE2GenerateABC",
+          "YuE2GenerateMusic", "EmptyYuE2LatentAudio", "VAEDecodeAudio",
+          "VAEDecodeAudioTiled", "SaveAudioAdvanced", "SheetSage2AudioToABC",
+          "AudioEncoderLoader", "LoadAudio", "PreviewAny"]
+real = requests.get("http://127.0.0.1:8188/object_info", timeout=60).json()
+keep = {n: {k: real[n].get(k, []) for k in ("input", "output", "output_name")}
+        for n in NEEDED if n in real}
+pathlib.Path("tests/object_info.json").write_text(
+    json.dumps(keep, indent=1, sort_keys=True))
+EOF
+```
+
+Then put the model names back into the three combos that list files
+(`ckpt_name`, `audio_encoder_name`, `audio`), which are empty on a machine
+with no models installed.
 
 It is a stand-in, not the real thing: it never loads a model. Inference,
 VRAM behaviour and multi-minute renders are the one thing this suite cannot
