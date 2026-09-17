@@ -17,6 +17,7 @@ import uuid
 import webbrowser
 from pathlib import Path
 
+import requests
 from flask import Flask, jsonify, request, send_file, send_from_directory
 
 import bootstrap
@@ -40,7 +41,11 @@ client = ComfyClient(cfg["comfy_url"])
 
 jobs: dict[str, dict] = {}
 jobs_lock = threading.Lock()
-library_lock = threading.Lock()
+# Re-entrant: every change to the library is a read, an edit and a write, and
+# all three have to happen without another thread slipping in between. A song
+# finishing while a track is being deleted otherwise writes back a list that
+# never knew about the other one, and whichever wrote first is simply gone.
+library_lock = threading.RLock()
 
 
 # --------------------------------------------------------------------------- #
@@ -57,15 +62,23 @@ def read_library() -> list[dict]:
 
 
 def write_library(items: list[dict]) -> None:
+    """Replace the library in one step.
+
+    Written beside the real file and moved over it, so a crash or a full disk
+    leaves the previous song list intact instead of a half-written one.
+    """
     with library_lock:
         DATA_DIR.mkdir(parents=True, exist_ok=True)
-        LIBRARY_PATH.write_text(json.dumps(items, indent=2), encoding="utf-8")
+        tmp = LIBRARY_PATH.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(items, indent=2), encoding="utf-8")
+        tmp.replace(LIBRARY_PATH)
 
 
 def add_track(track: dict) -> None:
-    items = read_library()
-    items.insert(0, track)
-    write_library(items)
+    with library_lock:
+        items = read_library()
+        items.insert(0, track)
+        write_library(items)
 
 
 def audio_duration(path: Path) -> float | None:
@@ -204,9 +217,16 @@ def ws_listener() -> None:
 # --------------------------------------------------------------------------- #
 # generation job
 # --------------------------------------------------------------------------- #
+TERMINAL = ("done", "error", "cancelled")
+
+
 def run_job(job_id: str, params: dict) -> None:
     def set_state(**kw):
         with jobs_lock:
+            # Note when it stopped, so the job list can keep it around long
+            # enough to be read rather than measuring from when it started.
+            if kw.get("status") in TERMINAL:
+                kw.setdefault("ended", time.time())
             jobs[job_id].update(kw)
 
     try:
@@ -218,6 +238,7 @@ def run_job(job_id: str, params: dict) -> None:
 
         started = time.time()
         last_stage = ""
+        unreachable_since = 0.0
         while True:
             time.sleep(1.5)
             # Read the flag under the lock and act outside it: jobs_lock is a
@@ -230,12 +251,40 @@ def run_job(job_id: str, params: dict) -> None:
                 set_state(status="cancelled", stage="Cancelled")
                 return
 
-            err = client.failed(prompt_id)
+            # One history read answers both questions, and a ComfyUI that
+            # blinks — a restart, a moment of load — must not throw away a song
+            # that is still sitting in its queue.
+            try:
+                hist = client.history(prompt_id)
+            except requests.RequestException:
+                unreachable_since = unreachable_since or time.time()
+                if time.time() - unreachable_since > 120:
+                    set_state(status="error", stage="Failed",
+                              error="ComfyUI stopped answering. Check the "
+                                    "engine on the Engine page, then make the "
+                                    "song again.")
+                    return
+                set_state(stage="Waiting for ComfyUI to answer")
+                continue
+            if unreachable_since:
+                unreachable_since = 0.0
+                # ComfyUI does not keep its queue over a restart, so a
+                # prompt it no longer knows about is never going to finish.
+                # Waiting out the hour-long timeout would just look like a
+                # song that hung.
+                if not hist and not client.in_queue(prompt_id):
+                    set_state(status="error", stage="Failed",
+                              error="ComfyUI restarted, and the song it was "
+                                    "working on went with its queue. Press "
+                                    "Create to make it again.")
+                    return
+
+            err = client.failed(prompt_id, hist)
             if err:
                 set_state(status="error", error=err, stage="Failed")
                 return
 
-            outs = client.outputs(prompt_id)
+            outs = client.outputs(prompt_id, hist)
             if outs:
                 break
 
@@ -427,7 +476,8 @@ def api_generate():
     created = []
     with jobs_lock:
         stale = [k for k, j in jobs.items()
-                 if j["status"] != "running" and time.time() - j["created"] > 3600]
+                 if j["status"] != "running"
+                 and time.time() - j.get("ended", j["created"]) > 3600]
         for k in stale:
             jobs.pop(k, None)
     for _ in range(count):
@@ -446,9 +496,17 @@ def api_generate():
 
 @app.get("/api/jobs")
 def api_jobs():
+    """Everything still going, plus whatever stopped in the last two minutes.
+
+    Measured from when a job ended, not from when it began. A song takes
+    minutes, so keying this on its start time dropped every real failure out of
+    the list the moment it failed — the card vanished and the reason with it.
+    """
+    cutoff = time.time() - 120
     with jobs_lock:
         active = [j for j in jobs.values()
-                  if j["status"] == "running" or time.time() - j["created"] < 120]
+                  if j["status"] == "running"
+                  or j.get("ended", j["created"]) > cutoff]
         return jsonify(sorted(active, key=lambda j: j["created"], reverse=True))
 
 
@@ -467,6 +525,10 @@ def api_upload_reference():
     try:
         name = client.upload_audio(request.files["file"])
         return jsonify({"ok": True, "name": name})
+    except requests.RequestException:
+        return jsonify({"error": "ComfyUI is not running, so the reference "
+                                 "song has nowhere to go. Start it from "
+                                 "Settings and try again."}), 503
     except Exception as exc:  # noqa: BLE001
         return jsonify({"error": str(exc)}), 500
 
@@ -495,36 +557,41 @@ def api_track(track_id: str):
 @app.patch("/api/track/<track_id>")
 def api_rename(track_id: str):
     body = request.get_json(silent=True) or {}
-    items = read_library()
-    for item in items:
-        if item["id"] == track_id:
-            if body.get("title"):
-                item["title"] = body["title"][:120]
-            if body.get("seconds") is not None:
-                # Sent by the player once the browser has decoded the file, for
-                # formats audio_duration() could not read without ffprobe.
-                try:
-                    seconds = round(float(body["seconds"]), 2)
-                except (TypeError, ValueError):
-                    seconds = 0.0
-                if 0 < seconds < 7200:
-                    item["seconds"] = seconds
-            write_library(items)
-            return jsonify({"ok": True, "track": item})
+    with library_lock:
+        items = read_library()
+        for item in items:
+            if item["id"] == track_id:
+                if body.get("title"):
+                    item["title"] = body["title"][:120]
+                if body.get("seconds") is not None:
+                    # Sent by the player once the browser has decoded the file,
+                    # for formats audio_duration() could not read without
+                    # ffprobe.
+                    try:
+                        seconds = round(float(body["seconds"]), 2)
+                    except (TypeError, ValueError):
+                        seconds = 0.0
+                    if 0 < seconds < 7200:
+                        item["seconds"] = seconds
+                write_library(items)
+                return jsonify({"ok": True, "track": item})
     return jsonify({"error": "Track not found."}), 404
 
 
 @app.delete("/api/track/<track_id>")
 def api_delete(track_id: str):
-    items = read_library()
-    keep = [i for i in items if i["id"] != track_id]
-    gone = [i for i in items if i["id"] == track_id]
+    with library_lock:
+        items = read_library()
+        keep = [i for i in items if i["id"] != track_id]
+        gone = [i for i in items if i["id"] == track_id]
+        write_library(keep)
+    # The file goes after the list is settled — deleting it first would leave a
+    # library entry pointing at nothing if the write failed.
     for item in gone:
         try:
             (TRACKS_DIR / item["file"]).unlink(missing_ok=True)
         except OSError:
             pass
-    write_library(keep)
     return jsonify({"ok": True})
 
 

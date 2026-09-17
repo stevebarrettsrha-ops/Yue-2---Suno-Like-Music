@@ -505,6 +505,9 @@ def hf_list(cfg: dict, repo: str, revision: str = "main") -> dict:
                                "model licence on huggingface.co first.")
         if r.status_code == 404:
             continue
+        if r.status_code >= 500:
+            raise RuntimeError(f"HuggingFace answered {r.status_code}. It is "
+                               "probably busy — try again in a moment.")
         r.raise_for_status()
         files = []
         for entry in r.json():
@@ -626,14 +629,31 @@ def _stream_download(url: str, dest: Path, task: Task, headers: dict) -> None:
 
 
 def delete_model(cfg: dict, folder: str, name: str) -> None:
+    """Remove one model file, and nothing else.
+
+    The folder comes off a fixed list and the name has to be a bare filename,
+    so `root/folder/name` cannot climb out of the models tree. What is then
+    unlinked is that entry itself, never where it might point: a model file
+    that happens to be a symlink loses the link and leaves its target alone.
+    Big model folders are very often symlinks onto another drive, so the check
+    that the entry really sits in the chosen folder compares the two resolved
+    directories rather than matching path text — "/models" is a prefix of
+    "/models-elsewhere", and a string test lets a file outside be deleted.
+    """
     root = Path(cfg["models_dir"]) if cfg.get("models_dir") else None
     if not root:
         raise RuntimeError("No models folder is set.")
-    if folder not in MODEL_FOLDERS or "/" in name or "\\" in name:
+    if (folder not in MODEL_FOLDERS or not name or name in (".", "..")
+            or "/" in name or "\\" in name):
         raise RuntimeError("That path is not allowed.")
-    target = (root / folder / name).resolve()
-    if not str(target).startswith(str(root.resolve())):
-        raise RuntimeError("That path is outside the models folder.")
-    if not target.exists():
-        raise RuntimeError("That file is already gone.")
-    target.unlink()
+    entry = root / folder / name
+    try:
+        if entry.parent.resolve() != (root / folder).resolve():
+            raise RuntimeError("That path is outside the models folder.")
+    except OSError as exc:
+        raise RuntimeError("That path is outside the models folder.") from exc
+    if not entry.is_symlink() and not entry.is_file():
+        raise RuntimeError("That file is already gone."
+                           if not entry.exists() else
+                           "That is not a model file.")
+    entry.unlink()

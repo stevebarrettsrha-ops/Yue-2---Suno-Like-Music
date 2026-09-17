@@ -189,6 +189,7 @@ comfy.py       Builds the YuE2 graph from ComfyUI's /object_info schema, queues 
 web/index.html The interface — one file, no build step
 assets/        yue2_full_reference.json, the workflow the graph mirrors
 data/          config.json, library.json, tracks/ (created on first run)
+.venv/         YuE Studio's own packages, built by the launcher on first run
 ```
 
 Port: set `YUE_STUDIO_PORT` to move off 7788. Set `YUE_STUDIO_NO_BROWSER=1` to

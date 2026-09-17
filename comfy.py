@@ -450,9 +450,21 @@ class ComfyClient:
         except Exception:
             pass
 
+    @staticmethod
+    def _in(state: dict, keys: tuple[str, ...], prompt_id: str) -> bool:
+        for key in keys:
+            for entry in state.get(key) or []:
+                if len(entry) > 1 and entry[1] == prompt_id:
+                    return True
+        return False
+
     def is_running(self, prompt_id: str) -> bool:
-        entries = self.queue_state().get("queue_running") or []
-        return any(len(e) > 1 and e[1] == prompt_id for e in entries)
+        return self._in(self.queue_state(), ("queue_running",), prompt_id)
+
+    def in_queue(self, prompt_id: str) -> bool:
+        """Still running or still waiting its turn."""
+        return self._in(self.queue_state(),
+                        ("queue_running", "queue_pending"), prompt_id)
 
     def stop(self, prompt_id: str) -> None:
         """Take one prompt out of the queue, whatever state it is in.
@@ -482,8 +494,8 @@ class ComfyClient:
         except Exception:
             return {}
 
-    def outputs(self, prompt_id: str) -> list[dict]:
-        hist = self.history(prompt_id)
+    def outputs(self, prompt_id: str, hist: dict | None = None) -> list[dict]:
+        hist = self.history(prompt_id) if hist is None else hist
         found = []
         for node_out in (hist.get("outputs") or {}).values():
             for key in ("audio", "audios", "result"):
@@ -492,8 +504,8 @@ class ComfyClient:
                         found.append(item)
         return found
 
-    def failed(self, prompt_id: str) -> str | None:
-        hist = self.history(prompt_id)
+    def failed(self, prompt_id: str, hist: dict | None = None) -> str | None:
+        hist = self.history(prompt_id) if hist is None else hist
         status = hist.get("status") or {}
         if status.get("status_str") == "error":
             for kind, data in status.get("messages", []):

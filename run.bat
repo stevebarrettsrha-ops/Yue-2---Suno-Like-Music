@@ -61,6 +61,27 @@ exit /b 1
 
 :haspy
 echo   Using: %PY%
+
+rem YuE Studio's own packages go into a virtual environment beside this file,
+rem so the Python that was found is left as it was found.
+if exist ".venv\Scripts\python.exe" goto hasvenv
+echo   Setting up YuE Studio's packages (first run only)...
+%PY% -m venv .venv
+if errorlevel 1 goto novenv
+
+:hasvenv
+".venv\Scripts\python.exe" -c "import sys" >nul 2>nul
+if errorlevel 1 goto novenv
+".venv\Scripts\python.exe" -m pip install --disable-pip-version-check --quiet -r requirements.txt
+if errorlevel 1 goto pipfail
+".venv\Scripts\python.exe" server.py
+pause
+exit /b 0
+
+rem No usable environment could be built. Windows Pythons are not marked
+rem externally managed, so installing into the one we found still works.
+:novenv
+echo   Could not build a separate environment; using %PY% as it is.
 %PY% -m pip install --disable-pip-version-check --quiet -r requirements.txt
 if errorlevel 1 goto pipfail
 %PY% server.py
