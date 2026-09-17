@@ -78,6 +78,30 @@ def run(slow: bool = False) -> Suite:
         s.check("the song made without a plan has no score",
                 any(not t["abc"] for t in library))
 
+        # -- every song is kept as a wav and an mp3 -------------------------
+        import shutil as _shutil
+        if _shutil.which("ffmpeg"):
+            for song in library:
+                if not s.check(f"{song['title']!r} is kept as a wav",
+                               song.get("file", "").endswith(".wav"),
+                               song.get("file", "")):
+                    continue
+                s.check(f"{song['title']!r} is kept as an mp3 too",
+                        song.get("mp3", "").endswith(".mp3"), song.get("mp3", ""))
+            mp3 = requests.get(f"{api}/api/track/{library[0]['id']}?format=mp3",
+                               timeout=20)
+            s.check("the mp3 is served when it is asked for",
+                    mp3.status_code == 200 and mp3.content[:3] in (b"ID3",
+                                                                   b"\xff\xfb"),
+                    f"HTTP {mp3.status_code}")
+            s.equal("and served as an mp3", mp3.headers.get("Content-Type"),
+                    "audio/mpeg")
+            wav = requests.get(f"{api}/api/track/{library[0]['id']}", timeout=20)
+            s.check("the wav is what plays by default",
+                    wav.content[:4] == b"RIFF", str(wav.content[:4]))
+            s.check("no lossless master is left lying about",
+                    not list((data / "tracks").glob("*.flac")))
+
         # -- the audio itself ----------------------------------------------
         track = library[0]
         whole = requests.get(f"{api}/api/track/{track['id']}", timeout=20)
@@ -99,10 +123,12 @@ def run(slow: bool = False) -> Suite:
         s.check("a rename and the browser's measured length both stick",
                 after["title"] == "Renamed" and after["seconds"] == 42.5)
         requests.delete(f"{api}/api/track/{track['id']}", timeout=10)
-        s.check("deleting removes the entry and its audio",
+        s.check("deleting removes the entry and every file it had",
                 not [t for t in requests.get(f"{api}/api/library", timeout=10).json()
                      if t["id"] == track["id"]]
-                and not (data / "tracks" / track["file"]).exists())
+                and not (data / "tracks" / track["file"]).exists()
+                and not (track.get("mp3")
+                         and (data / "tracks" / track["mp3"]).exists()))
 
         # -- refusals people should understand ------------------------------
         s.check("a song with no style is refused",

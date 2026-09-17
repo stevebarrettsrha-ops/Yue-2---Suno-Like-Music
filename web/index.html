@@ -522,7 +522,8 @@
                 <svg viewBox="0 0 24 24"><path d="M4 9a8 8 0 0 1 14-4M20 15a8 8 0 0 1-14 4"/><path d="M18 4v5h-5M6 20v-5h5"/></svg></button></div></div>
 
           <div class="orow" style="margin-bottom:14px"><span class="lab">Save as</span>
-            <div class="ctl"><select id="format"><option value="flac">flac</option></select></div></div>
+            <div class="ctl"><span class="note" id="saveAs">WAV and MP3 — every
+              song is kept as both</span></div></div>
         </details>
 
         <div class="titlerow">
@@ -931,6 +932,8 @@ function act(kind, t, btn) {
   if (kind === "like") { S.likes[t.id] = !S.likes[t.id]; store("yue.likes", S.likes);
     renderTracks(); renderLib(); return; }
   if (kind === "dl") { window.open("/api/track/" + t.id, "_blank"); return; }
+  if (kind === "dlmp3") { window.open("/api/track/" + t.id + "?format=mp3",
+    "_blank"); return; }
   if (kind === "reuse") { reuse(t); return; }
   if (kind === "score") { loadScore(t); return; }
   if (kind === "menu") { openMenu(btn, t); return; }
@@ -964,12 +967,17 @@ function openMenu(btn, t) {
     ["Load these settings", function () { reuse(t); }],
     ["Edit the melody plan", function () { loadScore(t); }],
     ["Rename", function () { rename(t); }],
-    ["Download", function () { window.open("/api/track/" + t.id, "_blank"); }],
+    ["Download " + (t.file || "").split(".").pop().toUpperCase(),
+     function () { window.open("/api/track/" + t.id, "_blank"); }],
     ["Copy the seed", function () {
       navigator.clipboard.writeText(String(t.seed));
       toast("Seed " + t.seed + " copied."); }],
     ["Delete", function () { remove(t); }]
   ];
+  if (t.mp3) {
+    items.splice(5, 0, ["Download MP3", function () {
+      window.open("/api/track/" + t.id + "?format=mp3", "_blank"); }]);
+  }
   items.forEach(function (pair) {
     const b = document.createElement("button");
     b.textContent = pair[0];
@@ -1138,7 +1146,6 @@ function collectParams() {
     repetition_penalty: o.rep / 100,
     tiled_decode: o.tiled !== "off",
     ckpt: $("ckpt").value,
-    format: $("format").value,
     seed: seedRaw ? Number(seedRaw) : null,
     count: S.count,
     reference_audio: S.reference
@@ -1515,7 +1522,6 @@ async function refreshStatus() {
   $("modelsTag").hidden = !(st.missing_models && st.missing_models.length);
   $("engineTag").hidden = !!st.comfy_online;
   $("createLabel").textContent = st.ready ? "Create" : "Set up the engine";
-  if (st.formats) fill($("format"), st.formats, "flac");
   if (st.checkpoints) {
     const sel = $("ckpt"), keep = sel.value;
     sel.innerHTML = '<option value="">auto</option>';

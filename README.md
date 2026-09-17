@@ -113,9 +113,10 @@ Leave lyrics empty, or switch Instrumental on, for a vocal-free track.
   `sgm_uniform` matches the reference workflow.
 - *Seed* — leave blank for random, or fix it to re-roll a song with one change.
 - *Tiled decode* — leave on unless you have plenty of VRAM; off is faster.
-- *Format* — `flac` keeps everything and needs nothing extra. `mp3` and `opus`
-  are offered when your ComfyUI build supports them, and both need ffmpeg —
-  the Engine page installs it.
+- *Save as* — every song is kept twice: a **wav** to listen to and keep, and an
+  **mp3** to send someone. ComfyUI renders the song losslessly and ffmpeg
+  writes both; the Engine page installs ffmpeg in one press. Without it a song
+  stays as the lossless file ComfyUI made, and still plays and downloads.
 
 **Score** is the melody and chords the song gets built on, in ABC notation. Leave the
 box empty and YuE2 writes it. Press the score button on any finished song and

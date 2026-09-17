@@ -1,5 +1,6 @@
 """A stand-in ComfyUI: /object_info shaped exactly like v0.35's, plus a queue."""
 import json, threading, time, io, wave, struct, hashlib, base64
+import os, shutil, subprocess, tempfile
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 V1 = lambda opts: [opts, {}]                       # nodes.py combo
@@ -109,6 +110,33 @@ def wav_bytes(seconds=3.0, rate=8000):
     return buf.getvalue()
 
 
+def rendered_audio():
+    """What a render comes out as: flac, the way ComfyUI writes it.
+
+    ComfyUI has no wav encoder at all, so a stand-in that handed back wav
+    would skip the very conversion the app does. Falls back to wav where
+    there is no ffmpeg to make a flac with, which is the case the app is
+    meant to survive anyway.
+    """
+    global _AUDIO
+    if _AUDIO is not None:
+        return _AUDIO
+    ffmpeg = shutil.which("ffmpeg")
+    _AUDIO = (wav_bytes(), ".wav")
+    if ffmpeg:
+        with tempfile.TemporaryDirectory() as tmp:
+            src, dst = f"{tmp}/a.wav", f"{tmp}/a.flac"
+            open(src, "wb").write(wav_bytes())
+            done = subprocess.run([ffmpeg, "-y", "-loglevel", "error",
+                                   "-i", src, dst], capture_output=True)
+            if done.returncode == 0 and os.path.getsize(dst):
+                _AUDIO = (open(dst, "rb").read(), ".flac")
+    return _AUDIO
+
+
+_AUDIO = None
+
+
 RUN_LOCK = threading.Lock()
 WS_CLIENTS = []
 
@@ -168,8 +196,8 @@ def _execute(pid, graph):
                                            "exception_message": "interrupted"}]]},
                             "outputs": {}}
             return
-    outputs = {"10": {"audio": [{"filename": f"{pid}.wav", "subfolder": "audio",
-                                 "type": "output"}]}}
+    outputs = {"10": {"audio": [{"filename": f"{pid}{rendered_audio()[1]}",
+                                 "subfolder": "audio", "type": "output"}]}}
     for nid, node in graph.items():
         if node["class_type"] == "PreviewAny":
             outputs[nid] = {"text": ["X:1\nT:Mock score\nK:C\nCDEF|"]}
@@ -227,7 +255,9 @@ class H(BaseHTTPRequestHandler):
                     "queue_running": [[0, pid, {}, {}, []] for pid in QUEUE_RUNNING],
                     "queue_pending": [[0, pid, {}, {}, []] for pid in QUEUE_PENDING]})
         elif p == "/view":
-            self._send(200, wav_bytes(), "audio/wav")
+            data, suffix = rendered_audio()
+            self._send(200, data,
+                       "audio/flac" if suffix == ".flac" else "audio/wav")
         else:
             self._send(404, {"error": "no route " + p})
 

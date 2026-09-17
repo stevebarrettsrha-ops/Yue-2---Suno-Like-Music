@@ -168,14 +168,74 @@ def read_library() -> list[dict]:
         return [i for i in items if isinstance(i, dict) and i.get("id")]
 
 
-def track_file(item: dict) -> Path | None:
+def track_file(item: dict, kind: str = "") -> Path | None:
     """Where a library entry's audio lives, or None if it names nothing sane.
+
+    A song is kept twice: a wav to listen to and keep, and an mp3 to send
+    someone. `kind` picks one of those; without it you get the wav, or
+    whatever single file an older song was saved as.
 
     Only ever a plain filename inside data/tracks: the name comes out of a
     file anyone can edit, and it is used to both serve and delete.
     """
-    name = Path(str(item.get("file") or "")).name
+    name = Path(str(item.get(kind or "file") or "")).name
     return (TRACKS_DIR / name) if name else None
+
+
+def track_files(item: dict) -> list[Path]:
+    """Everything on disk that belongs to this song."""
+    found = []
+    for kind in ("file", "mp3"):
+        path = track_file(item, kind)
+        if path and path not in found:
+            found.append(path)
+    return found
+
+
+# --------------------------------------------------------------------------- #
+# what a finished song is saved as
+#
+# ComfyUI can write flac, mp3 or opus, and no wav at all — so it renders the
+# lossless flac and the pair people actually want is made here, from that.
+# --------------------------------------------------------------------------- #
+SAVE_FORMATS = (("wav", ()), ("mp3", ("-b:a", "320k")))
+
+
+def convert_audio(src: Path, dest: Path, args: tuple = ()) -> bool:
+    """Re-encode one file into another. False if ffmpeg cannot or is absent."""
+    ffmpeg = shutil.which("ffmpeg")
+    if not ffmpeg or src == dest:
+        return False
+    try:
+        done = subprocess.run(
+            [ffmpeg, "-y", "-loglevel", "error", "-i", str(src), *args,
+             str(dest)], capture_output=True, text=True, timeout=900)
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return (done.returncode == 0 and dest.is_file()
+            and dest.stat().st_size > 0)
+
+
+def save_as_wav_and_mp3(master: Path, track_id: str) -> dict:
+    """Turn what ComfyUI rendered into the files a song is kept as.
+
+    Returns what was written. If ffmpeg is not installed nothing is, and the
+    song stays as the lossless file ComfyUI made — playable and downloadable,
+    just not in the two formats asked for, and the Engine page offers to
+    install ffmpeg in one press.
+    """
+    made: dict = {}
+    for suffix, args in SAVE_FORMATS:
+        dest = TRACKS_DIR / f"{track_id}.{suffix}"
+        if convert_audio(master, dest, args):
+            made[suffix] = dest.name
+    if made.get("wav"):
+        # The wav holds everything the flac did, so the flac is just a copy.
+        try:
+            master.unlink(missing_ok=True)
+        except OSError:
+            pass
+    return made
 
 
 def write_library(items: list[dict]) -> None:
@@ -209,15 +269,25 @@ def audio_duration(path: Path) -> float | None:
     else falls back to ffprobe, and if that is missing the front end backfills
     the real duration the first time the track is played.
     """
-    for reader in (_duration_flac, _duration_opus, _duration_ffprobe):
+    for reader in (_duration_wav, _duration_flac, _duration_opus,
+                   _duration_ffprobe):
         try:
             seconds = reader(path)
         except (OSError, ValueError, IndexError, ZeroDivisionError,
-                subprocess.SubprocessError):
+                subprocess.SubprocessError, __import__("wave").Error):
             continue
         if seconds and seconds > 0:
             return round(seconds, 2)
     return None
+
+
+def _duration_wav(path: Path) -> float | None:
+    if path.suffix.lower() != ".wav":
+        return None
+    import wave
+    with wave.open(str(path), "rb") as handle:
+        rate = handle.getframerate()
+        return handle.getnframes() / rate if rate else None
 
 
 def _duration_flac(path: Path) -> float | None:
@@ -438,6 +508,10 @@ def run_job(job_id: str, params: dict) -> None:
                 for chunk in resp.iter_content(1024 * 256):
                     fh.write(chunk)
 
+        set_state(stage="Saving as wav and mp3", pct=96)
+        made = save_as_wav_and_mp3(dest, track_id)
+        playable = TRACKS_DIR / made["wav"] if made.get("wav") else dest
+
         track = {
             "id": track_id,
             "title": track_title(params),
@@ -449,7 +523,7 @@ def run_job(job_id: str, params: dict) -> None:
             # back into the slider; seconds is how long the song actually came
             # out, and is what gets shown.
             "duration": params.get("duration"),
-            "seconds": audio_duration(dest),
+            "seconds": audio_duration(playable),
             "mode": params.get("mode"),
             "steps": params.get("steps"),
             "cfg": params.get("cfg"),
@@ -460,7 +534,8 @@ def run_job(job_id: str, params: dict) -> None:
             # read, edited and re-rendered.
             "abc": built["abc_text"] or client.preview_text(prompt_id,
                                                             built["abc_node"]),
-            "file": dest.name,
+            "file": playable.name,
+            "mp3": made.get("mp3", ""),
             "created": time.time(),
         }
         add_track(track)
@@ -694,9 +769,10 @@ def api_library():
 
 @app.get("/api/track/<track_id>")
 def api_track(track_id: str):
+    kind = "mp3" if request.args.get("format") == "mp3" else ""
     for item in read_library():
         if item["id"] == track_id:
-            path = track_file(item)
+            path = track_file(item, kind)
             if path is None or not path.is_file():
                 return jsonify({"error": "Audio file is missing."}), 404
             mime = mimetypes.guess_type(path.name)[0] or "audio/flac"
@@ -739,13 +815,11 @@ def api_delete(track_id: str):
     # The file goes after the list is settled — deleting it first would leave a
     # library entry pointing at nothing if the write failed.
     for item in gone:
-        path = track_file(item)
-        if path is None:
-            continue
-        try:
-            path.unlink(missing_ok=True)
-        except OSError:
-            pass
+        for path in track_files(item):
+            try:
+                path.unlink(missing_ok=True)
+            except OSError:
+                pass
     return jsonify({"ok": True})
 
 

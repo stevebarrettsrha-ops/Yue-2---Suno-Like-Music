@@ -295,7 +295,9 @@ def dependencies(cfg: dict) -> list[dict]:
     ff = _which("ffmpeg")
     items.append({"id": "ffmpeg", "label": "ffmpeg",
                   "state": "ok" if ff else "warn",
-                  "detail": ff or "Optional — needed to save as mp3.",
+                  "detail": ff or ("Songs are kept as wav and mp3, and this is "
+                                   "what writes them. Without it they stay as "
+                                   "the lossless flac ComfyUI renders."),
                   "action": None if ff else "install"})
 
     # Models
