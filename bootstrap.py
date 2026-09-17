@@ -24,6 +24,7 @@ import sys
 import threading
 import time
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import requests
 
@@ -58,6 +59,30 @@ MODEL_BF16 = (
     False,
 )
 
+def clean_url(url: str) -> str:
+    """A base URL fit to build requests on.
+
+    No stray whitespace and no trailing slash — appending /system_stats to
+    "http://host:8188/" asks for //system_stats, which is a 404, not a health
+    check — and never empty.
+    """
+    return (url or "").strip().rstrip("/") or "http://127.0.0.1:8188"
+
+
+def comfy_port(url: str) -> int:
+    """The port to start ComfyUI on, read out of its URL.
+
+    This used to be int(url.rsplit(":")[-1]), which blew up on a trailing
+    slash or a port-less address — typed once into Settings, that config
+    stopped the server from booting at all.
+    """
+    try:
+        port = urlsplit(clean_url(url)).port
+    except ValueError:
+        port = None
+    return port or 8188
+
+
 DEFAULT_CONFIG = {
     "comfy_url": "http://127.0.0.1:8188",
     "comfy_dir": "",       # ComfyUI root (managed or existing)
@@ -83,6 +108,9 @@ def load_config() -> dict:
             cfg.update(json.loads(CONFIG_PATH.read_text(encoding="utf-8")))
         except Exception:
             pass
+    # Heal a URL saved before it was normalised — a trailing slash in here
+    # used to keep the whole app from starting.
+    cfg["comfy_url"] = clean_url(cfg.get("comfy_url", ""))
     return cfg
 
 
@@ -315,7 +343,7 @@ def download(url: str, dest: Path, prog: Progress, key: str,
     with requests.get(url, headers=headers, stream=True, timeout=60,
                       allow_redirects=True) as r:
         if r.status_code == 416:  # already complete
-            part.rename(dest)
+            part.replace(dest)
             return
         r.raise_for_status()
         # A 206 means the server honoured the Range header and Content-Length
@@ -358,19 +386,31 @@ class ComfyProcess:
 
     def start(self, python: str, comfy_dir: Path, port: int,
               prog: Progress) -> None:
+        """Raises RuntimeError with a sentence a person can act on. A ComfyUI
+        folder that has moved, or an interpreter that is gone, is an engine
+        that cannot start — never a reason the whole app fails to boot."""
         if self.alive():
             return
+        if not (comfy_dir / "main.py").exists():
+            raise RuntimeError(
+                f"There is no ComfyUI at {comfy_dir} any more — the folder "
+                "has moved or been deleted. Run setup again from Settings.")
         cmd = [python, "main.py", "--listen", "127.0.0.1", "--port", str(port),
                "--disable-auto-launch"]
         prog.log("Launching ComfyUI: " + " ".join(cmd))
         creation = 0
         if platform.system() == "Windows":
             creation = getattr(subprocess, "CREATE_NO_WINDOW", 0)
-        self.proc = subprocess.Popen(
-            cmd, cwd=str(comfy_dir), stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT, text=True, bufsize=1,
-            creationflags=creation,
-        )
+        try:
+            self.proc = subprocess.Popen(
+                cmd, cwd=str(comfy_dir), stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT, text=True, bufsize=1,
+                creationflags=creation,
+            )
+        except OSError as exc:
+            raise RuntimeError(
+                f"ComfyUI could not be started with {python} — {exc}. "
+                "Run setup again from Settings.") from exc
         threading.Thread(target=self._pump, args=(prog,), daemon=True).start()
 
     def _pump(self, prog: Progress) -> None:
@@ -563,7 +603,7 @@ def run_setup(cfg: dict, prog: Progress, comfy: ComfyProcess,
             if not comfy_online(url):
                 raise RuntimeError(f"ComfyUI is not answering at {url}.")
         else:
-            port = int(url.rsplit(":", 1)[-1])
+            port = comfy_port(url)
             if comfy_online(url):
                 prog.log(f"ComfyUI already running on port {port}")
             elif not cfg.get("python"):

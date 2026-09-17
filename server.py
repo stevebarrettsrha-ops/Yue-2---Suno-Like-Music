@@ -22,8 +22,9 @@ from flask import Flask, jsonify, request, send_file, send_from_directory
 
 import bootstrap
 import manager
-from bootstrap import (APP_DIR, ComfyProcess, Progress, comfy_online,
-                       detect_comfy_dirs, load_config, save_config)
+from bootstrap import (APP_DIR, ComfyProcess, Progress, clean_url,
+                       comfy_online, comfy_port, detect_comfy_dirs,
+                       load_config, save_config)
 from comfy import ComfyClient, ComfyError
 
 DATA_DIR = APP_DIR / "data"
@@ -208,7 +209,8 @@ def ws_listener() -> None:
                 elif mtype == "progress" and pid:
                     ws_progress.setdefault(pid, {}).update(
                         value=data.get("value", 0), max=data.get("max", 0))
-                elif mtype in ("execution_success", "execution_error") and pid:
+                elif mtype in ("execution_success", "execution_error",
+                               "execution_interrupted") and pid:
                     ws_progress.pop(pid, None)
         except Exception:
             time.sleep(4)
@@ -413,7 +415,8 @@ def api_setup_start():
                 "download_cover_model", "download_bf16", "auto_start_comfy"):
         if key in body:
             cfg[key] = body[key]
-    client.url = cfg["comfy_url"].rstrip("/")
+    cfg["comfy_url"] = clean_url(cfg["comfy_url"])
+    client.url = cfg["comfy_url"]
     save_config(cfg)
     progress.__init__()  # reset log and step states
     threading.Thread(target=bootstrap.run_setup,
@@ -443,8 +446,11 @@ def api_comfy_start():
                                      "press Recheck."}), 400
         return jsonify({"ok": False,
                         "error": "Run setup first."}), 400
-    port = int(cfg["comfy_url"].rsplit(":", 1)[-1])
-    comfy_proc.start(cfg["python"], Path(cfg["comfy_dir"]), port, progress)
+    port = comfy_port(cfg["comfy_url"])
+    try:
+        comfy_proc.start(cfg["python"], Path(cfg["comfy_dir"]), port, progress)
+    except RuntimeError as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
     return jsonify({"ok": True})
 
 
@@ -455,7 +461,8 @@ def api_config():
                 "download_cover_model", "download_bf16", "torch_index"):
         if key in body:
             cfg[key] = body[key]
-    client.url = cfg["comfy_url"].rstrip("/")
+    cfg["comfy_url"] = clean_url(cfg["comfy_url"])
+    client.url = cfg["comfy_url"]
     save_config(cfg)
     return jsonify({"ok": True, "config": cfg})
 
@@ -730,9 +737,14 @@ def main() -> None:
     if cfg.get("setup_complete") and cfg.get("auto_start_comfy", True) \
             and cfg.get("comfy_dir") and cfg.get("python") \
             and not comfy_online(cfg["comfy_url"]):
-        port = int(cfg["comfy_url"].rsplit(":", 1)[-1])
+        port = comfy_port(cfg["comfy_url"])
         progress.log("Restarting ComfyUI from the last setup…")
-        comfy_proc.start(cfg["python"], Path(cfg["comfy_dir"]), port, progress)
+        try:
+            comfy_proc.start(cfg["python"], Path(cfg["comfy_dir"]), port,
+                             progress)
+        except RuntimeError as exc:
+            # The app still comes up; the Engine page explains the rest.
+            progress.log(str(exc))
 
     url = f"http://127.0.0.1:{PORT}"
     print(f"\n  YuE Studio  →  {url}\n")
