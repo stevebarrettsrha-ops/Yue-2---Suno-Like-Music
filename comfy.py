@@ -330,6 +330,10 @@ class ComfyClient:
                 "audio": {"names": ["audio"], "value": ["20", 0], "required": True},
                 "mode": {"names": ["mode"], "value": "melody"},
             })
+            # The transcription is melody-only, and the node's own doc says to
+            # run the music node in the matching mode — "full" against a
+            # melody-only score asks for chords the notation never had.
+            mode = "melody"
             abc_link = ["19", 0]
             abc_node = self._add_preview(g, "21", abc_link)
         elif p.get("use_abc", True):

@@ -89,7 +89,9 @@ YuE2GenerateMusic ─ seconds ─► EmptyYuE2LatentAudio ─ LATENT ─► KSam
 ```
 
 Cover mode swaps `YuE2GenerateABC` for `LoadAudio → AudioEncoderLoader →
-SheetSage2AudioToABC`. Both feed the same `abc` input.
+SheetSage2AudioToABC`. Both feed the same `abc` input, and cover mode also
+forces the music node to `melody` — SheetSage transcribes melody only, and its
+doc says to run the music node in the matching mode.
 
 A `PreviewAny` watches whichever ABC source is in play (14 for the generator,
 21 for the cover branch) so the score comes back in the prompt's history under
