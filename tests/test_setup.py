@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import io
 import os
 import shutil
 import sys
@@ -154,6 +155,34 @@ def run(slow: bool = False) -> Suite:
         manager.delete_model(cfg, "audio_encoders", "onbig.safetensors")
         s.check("a models folder symlinked to another drive still works",
                 not (elsewhere / "onbig.safetensors").exists())
+
+    # -- a long pip install has to show that it is doing something ---------
+    # pip draws no progress bar when its output is piped, so installing a
+    # 2.7 GB PyTorch wheel said nothing at all for minutes and looked hung.
+    state: dict = {}
+    s.check("a Downloading line is remembered, not shown as progress",
+            bootstrap.pip_progress(
+                "Downloading torch-2.11.0%2Bcu128-cp312-win_amd64.whl (2753.2 MB)",
+                state) is None and state.get("what") == "torch")
+    state["since"] = time.time() - 60
+    told = bootstrap.pip_progress("Progress 1288490188 of 2887193395", state)
+    s.check("a Progress line becomes something worth reading",
+            told is not None and "1.29 of 2.89 GB" in told and "44%" in told,
+            told or "(nothing)")
+    s.check("and carries a speed and a time left",
+            "MB/s" in (told or "") and "left" in (told or ""))
+    small = bootstrap.pip_progress("Progress 8000000 of 16000000",
+                                   {"what": "numpy", "since": time.time() - 1})
+    s.check("a small file is measured in MB, not 0.01 GB",
+            "8 of 16 MB" in (small or ""), small or "(nothing)")
+    for junk in ("Progress", "Progress x of y", "Collecting scipy", ""):
+        s.check(f"pip output {junk!r} is not mistaken for progress",
+                bootstrap.pip_progress(junk, {}) is None)
+
+    s.check("a carriage return counts as a line break",
+            list(bootstrap.stream_lines(io.StringIO(
+                "Progress 1 of 9\rProgress 5 of 9\rdone\n")))
+            == ["Progress 1 of 9", "Progress 5 of 9", "done"])
 
     # -- downloads: resumable, and honest about progress -------------------
     body = bytes(range(256)) * 8000

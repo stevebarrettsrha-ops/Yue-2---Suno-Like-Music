@@ -143,15 +143,26 @@ def spawn(kind: str, title: str, fn, meta: dict | None = None) -> Task:
 # --------------------------------------------------------------------------- #
 def stream(cmd: list[str], task: Task, cwd: str | None = None,
            keep: tuple[str, ...] = ()) -> int:
+    """Run a command, logging what it says and showing how far it has got.
+
+    Reads carriage returns as line breaks, so pip's download progress reaches
+    the page instead of arriving all at once when the file is already there.
+    """
     task.log("$ " + " ".join(cmd))
     proc = subprocess.Popen(cmd, cwd=cwd, stdout=subprocess.PIPE,
-                            stderr=subprocess.STDOUT, text=True, bufsize=1)
+                            stderr=subprocess.STDOUT, text=True, bufsize=0)
     assert proc.stdout
-    for line in proc.stdout:
-        line = line.rstrip()
-        if not line:
-            continue
-        if not keep or line.startswith(keep):
+    state: dict = {}
+    last_shown = 0.0
+    for line in bootstrap.stream_lines(proc.stdout):
+        detail = bootstrap.pip_progress(line, state)
+        if detail:
+            if time.time() - last_shown > 0.5:
+                last_shown = time.time()
+                task.set(detail=detail)
+                if state.get("total"):
+                    task.set(pct=state["at"] / state["total"] * 100)
+        elif not keep or line.startswith(keep):
             task.log(line[:220])
         if task.cancel:
             proc.terminate()
@@ -454,7 +465,8 @@ def _install_torch(task: Task, cfg: dict, opts: dict) -> None:
     task.set(detail="Installing PyTorch — this is the big one…")
     stream([str(vpy), "-m", "pip", "install", "--upgrade", "pip", "wheel"], task,
            keep=("Collecting", "Installing", "Successfully", "ERROR"))
-    cmd = [str(vpy), "-m", "pip", "install", "torch", "torchaudio", "torchvision"]
+    cmd = [str(vpy), "-m", "pip", "install", "torch", "torchaudio",
+           "torchvision"] + bootstrap._pip_raw_progress(vpy)
     if index:
         cmd += ["--index-url", index]
     if stream(cmd, task, keep=("Collecting", "Downloading", "Installing",

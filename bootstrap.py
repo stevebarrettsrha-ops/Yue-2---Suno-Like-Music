@@ -18,6 +18,7 @@ from __future__ import annotations
 import json
 import os
 import platform
+import re
 import shutil
 import subprocess
 import sys
@@ -678,16 +679,108 @@ def _has_nvidia() -> bool:
         return False
 
 
-def _pip(python: Path | str, args: list[str], prog: Progress) -> None:
+def stream_lines(stream):
+    """What a subprocess writes, with a carriage return counting as a break.
+
+    pip redraws its progress bar over itself with \r; read only on newlines
+    and nothing appears until the download has already finished.
+    """
+    buffer = ""
+    while True:
+        char = stream.read(1)
+        if not char:
+            break
+        if char in ("\r", "\n"):
+            if buffer.strip():
+                yield buffer.strip()
+            buffer = ""
+        else:
+            buffer += char
+    if buffer.strip():
+        yield buffer.strip()
+
+
+def pip_progress(line: str, state: dict) -> str | None:
+    """Turn one line of pip output into something worth reading.
+
+    `--progress-bar raw` prints "Progress 123 of 456" as it goes, which is the
+    only account of a multi-gigabyte download that survives being piped — pip
+    draws no bar unless it is talking to a terminal.
+    """
+    if line.startswith("Downloading "):
+        state["what"] = line.split()[1].split("-")[0] or "package"
+        state["at"] = 0
+        state["total"] = 0
+        state["since"] = time.time()
+        return None
+    if not line.startswith("Progress "):
+        return None
+    parts = line.split()
+    try:
+        got, total = int(parts[1]), int(parts[3])
+    except (IndexError, ValueError):
+        return None
+    state["at"], state["total"] = got, total
+    elapsed = max(time.time() - state.get("since", time.time()), 0.001)
+    speed = got / elapsed
+    left = (total - got) / speed if speed > 0 else 0
+    what = state.get("what", "package")
+    if total <= 0:
+        return f"{what} — {got/1e6:.0f} MB so far"
+    size = ((f"{got/1e9:.2f} of {total/1e9:.2f} GB") if total >= 1e9
+            else (f"{got/1e6:.0f} of {total/1e6:.0f} MB"))
+    return (f"{what} — {size} ({got * 100 // total}%) · "
+            f"{speed/1e6:.1f} MB/s · "
+            f"{int(left // 60)}m {int(left % 60):02d}s left")
+
+
+def _pip_raw_progress(python: Path | str) -> list[str]:
+    """`--progress-bar raw` if this pip is new enough to know the word."""
+    try:
+        out = _run([str(python), "-m", "pip", "--version"], timeout=60)
+        major, minor = (int(n) for n in
+                        re.search(r"pip (\d+)\.(\d+)", out.stdout).groups())
+    except Exception:  # noqa: BLE001
+        return []
+    return ["--progress-bar", "raw"] if (major, minor) >= (23, 1) else []
+
+
+def _pip(python: Path | str, args: list[str], prog: Progress,
+         key: str = "deps") -> None:
     cmd = [str(python), "-m", "pip"] + args
+    if args and args[0] == "install":
+        cmd += _pip_raw_progress(python)
     prog.log("pip " + " ".join(args[:4]))
     proc = subprocess.Popen(cmd, stdout=subprocess.PIPE,
-                            stderr=subprocess.STDOUT, text=True, bufsize=1)
+                            stderr=subprocess.STDOUT, text=True, bufsize=0)
     assert proc.stdout
-    for line in proc.stdout:
-        line = line.rstrip()
-        if line.startswith(("Collecting", "Downloading", "Installing",
-                            "Successfully", "ERROR", "Building")):
-            prog.log(line[:200])
+
+    state: dict = {}
+    last_shown = [0.0]
+    stop = threading.Event()
+
+    def tick() -> None:
+        # Unpacking a 2.7 GB wheel says nothing for minutes. Keep a clock
+        # running so the panel never looks like it has died.
+        while not stop.wait(5):
+            if time.time() - last_shown[0] < 5:
+                continue
+            waited = int(time.time() - started)
+            prog.detail(key, f"{state.get('what') or 'Working'} — "
+                             f"{waited // 60}m {waited % 60:02d}s so far")
+
+    started = time.time()
+    threading.Thread(target=tick, daemon=True).start()
+    try:
+        for line in stream_lines(proc.stdout):
+            detail = pip_progress(line, state)
+            if detail and time.time() - last_shown[0] > 0.5:
+                last_shown[0] = time.time()
+                prog.detail(key, detail)
+            elif line.startswith(("Collecting", "Downloading", "Installing",
+                                  "Successfully", "ERROR", "Building")):
+                prog.log(line[:200])
+    finally:
+        stop.set()
     if proc.wait() != 0:
         raise RuntimeError("pip " + " ".join(args[:3]) + " failed — see the log.")

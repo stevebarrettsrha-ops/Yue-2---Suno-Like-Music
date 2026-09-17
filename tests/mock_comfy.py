@@ -39,7 +39,12 @@ OBJECT_INFO = {
         "top_p": ["FLOAT", {"default": 0.95}],
         "top_k": ["INT", {"default": 100}],
         "repetition_penalty": ["FLOAT", {"default": 1.2}]},
-        "optional": {"abc": ["STRING", {"forceInput": True}]}}},
+        # cfg_scale arrived in ComfyUI 4e779e5, after this graph was written:
+        # optional, with a default, so a builder that reads the schema keeps
+        # working without knowing about it.
+        "optional": {"abc": ["STRING", {"forceInput": True}],
+                     "cfg_scale": ["FLOAT", {"default": 1.0, "min": 0.0,
+                                             "max": 100.0}]}}},
     "EmptyYuE2LatentAudio": {"input": {"required": {
         "seconds": ["FLOAT", {"default": 120.0}],
         "batch_size": ["INT", {"default": 1}]}}},
