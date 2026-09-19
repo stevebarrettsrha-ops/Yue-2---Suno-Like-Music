@@ -67,6 +67,36 @@ def run(slow: bool = False) -> Suite:
             s.check("style chips light up for what is already written",
                     page.locator("#styleChips .chip.on").count() >= 1)
 
+            # -- attachments look attached, and one click detaches ----------
+            # The reference used to keep a bare "+ Audio" face while quietly
+            # making every next song a cover, and the voice button could only
+            # flip male/female — the way back to Any was hidden elsewhere.
+            import struct as _struct, wave as _wave
+            ref = Path(data) / "tiny.wav"
+            with _wave.open(str(ref), "w") as w:
+                w.setnchannels(1); w.setsampwidth(2); w.setframerate(8000)
+                w.writeframes(_struct.pack("<h", 0) * 4000)
+            page.set_input_files("#refFile", str(ref))
+            page.wait_for_function(
+                "() => document.querySelector('#btnAudio').textContent"
+                ".includes('tiny.wav')", timeout=10000)
+            s.check("an attached reference shows its name on the button", True)
+            s.check("and the next song would be a cover",
+                    page.evaluate("() => collectParams().reference_audio")
+                    is not None)
+            page.click("#btnAudio")
+            s.check("one click removes it",
+                    "Audio" in page.locator("#btnAudio").inner_text()
+                    and page.evaluate("() => collectParams().reference_audio")
+                    is None)
+            seen = []
+            for _ in range(3):
+                page.click("#btnVoice"); time.sleep(0.3)
+                seen.append(page.locator("#btnVoice").inner_text().strip())
+            s.check("the voice button cycles male, female and back to Any",
+                    seen == ["Voice: Male", "Voice: Female", "Voice"],
+                    str(seen))
+
             before = page.input_value("#style")
             name = page.locator("#styleChips .chip:not(.on)").first.inner_text()
             chip = page.locator("#styleChips .chip", has_text=name).first
