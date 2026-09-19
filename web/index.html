@@ -314,6 +314,10 @@
           padding:9px 11px;font-size:13px}
   .switch input{accent-color:var(--accent);width:16px;height:16px}
   .grid2{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:10px}
+  .btn .spin{display:inline-block;width:12px;height:12px;border:2px solid currentColor;
+    border-right-color:transparent;border-radius:50%;margin-right:7px;
+    vertical-align:-2px;animation:rot .8s linear infinite}
+  @keyframes rot{to{transform:rotate(360deg)}}
   .toast{position:fixed;left:50%;bottom:96px;transform:translateX(-50%);z-index:70;
          background:#1c1c22;border:1px solid var(--line);border-radius:11px;padding:11px 16px;
          font-size:13px;box-shadow:0 18px 40px -20px #000;max-width:min(560px,92vw)}
@@ -1324,6 +1328,17 @@ async function loadHfCuratedRefresh() {
 }
 
 /* ========================= engine page ========================= */
+/* A button that is actually doing something says so and cannot be pressed
+   again until it is done. Returns handles to update the label or restore it. */
+function busy(btn, label) {
+  const old = btn.innerHTML;
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spin"></span>' + esc(label);
+  return {
+    label(text) { btn.innerHTML = '<span class="spin"></span>' + esc(text); },
+    done() { btn.disabled = false; btn.innerHTML = old; },
+  };
+}
 async function loadDeps() {
   const box = $("depList");
   try {
@@ -1387,6 +1402,7 @@ function waitForTask(id) {
 }
 async function installAllMissing() {
   const order = ["git","comfyui","torch","comfy_reqs"];
+  const b = busy($("btnInstallAll"), "Checking what is missing…");
   try {
     const d = await api("/api/deps");
     // action is null for anything YuE Studio will not install itself — a
@@ -1394,19 +1410,24 @@ async function installAllMissing() {
     const missing = order.filter((id) =>
       d.items.some((i) => i.id === id && i.state === "missing" && i.action));
     if (!missing.length) { toast("Nothing missing. Try Start the engine."); return; }
-    toast("Installing " + missing.length + " item(s), one after another.");
-    for (const id of missing) {
+    const labelOf = (id) =>
+      ((d.items.find((i) => i.id === id) || {}).label) || id;
+    for (let n = 0; n < missing.length; n++) {
+      const id = missing[n];
+      b.label("Installing " + labelOf(id) +
+              " (" + (n + 1) + " of " + missing.length + ")…");
       const r = await api("/api/deps/" + id + "/install", { method:"POST",
         headers:{"Content-Type":"application/json"},
         body:JSON.stringify({ torch_index: $("torchIndex").value }) });
       S.taskId = r.task.id; S.taskCursor = 0; $("taskLog").textContent = "";
       pollTasks();
       const ok = await waitForTask(r.task.id);
-      if (!ok) { toast("Stopped at " + id + " — see the activity log.", true); return; }
+      if (!ok) { toast("Stopped at " + labelOf(id) + " — see the activity log.", true); return; }
       await loadDeps();
     }
     toast("All set. Now get the models.");
   } catch (e) { toast(e.message, true); }
+  finally { b.done(); }
 }
 let taskTimer = null;
 async function pollTasks() {
@@ -1463,7 +1484,14 @@ async function pollTasks() {
   }
   if (list.some((t) => t.state === "running")) taskTimer = setTimeout(pollTasks, 1400);
 }
+let engineStarting = false;
 async function startEngine() {
+  if (engineStarting) {
+    toast("It is already starting — its console is in the Activity log.");
+    return;
+  }
+  const b = busy($("btnStartEngine"), "Starting…");
+  engineStarting = true;
   try {
     const r = await api("/api/comfy/start", { method:"POST" });
     // Nothing is started when the address already answers. Saying "starting"
@@ -1473,11 +1501,45 @@ async function startEngine() {
       toast("Something is already answering on that address, so nothing was " +
             "started. If songs cannot find the model, it is not this ComfyUI — " +
             "check the Engine page.", true);
-    } else {
-      toast("Starting ComfyUI. The first run takes a moment.");
+      return;
     }
-    loadDeps();
+    // There is no honest percentage for a model load, so show the real thing
+    // instead: elapsed time on the button and ComfyUI's own console below.
+    $("taskTitle").textContent = "Starting the engine — the first start loads " +
+      "the model, which can take a few minutes. Its console:";
+    const began = Date.now();
+    while (Date.now() - began < 5 * 60 * 1000) {
+      await new Promise((tick) => setTimeout(tick, 1500));
+      b.label("Starting… " + Math.round((Date.now() - began) / 1000) + "s");
+      try {
+        const snap = await api("/api/setup/state?since=999999");
+        if (snap.comfy_tail && snap.comfy_tail.length) {
+          const log = $("taskLog");
+          log.textContent = snap.comfy_tail.join("\n");
+          log.scrollTop = log.scrollHeight;
+        }
+      } catch (e) { /* the console feed is a nicety */ }
+      let st = null;
+      try { st = await api("/api/status"); } catch (e) { continue; }
+      if (st.comfy_online) {
+        $("taskTitle").textContent = "The engine is up.";
+        toast("The engine is up.");
+        refreshStatus();
+        return;
+      }
+      if (st.comfy_running_managed === false) {
+        $("taskTitle").textContent = "The engine stopped while starting — " +
+          "its last words are below.";
+        toast("ComfyUI stopped while starting — see the Activity log.", true);
+        return;
+      }
+    }
+    $("taskTitle").textContent = "Still not answering after five minutes — " +
+      "its console is below.";
+    toast("The engine did not come up within five minutes — see the " +
+          "Activity log.", true);
   } catch (e) { toast(e.message, true); }
+  finally { engineStarting = false; b.done(); loadDeps(); }
 }
 
 /* ========================= setup ========================= */
@@ -1769,7 +1831,13 @@ function wire() {
       $("hfToken").value = ""; loadHf(); toast("Saved.");
     } catch (e) { toast(e.message, true); } });
 
-  $("btnRecheck").addEventListener("click", () => { loadDeps(); refreshStatus(); });
+  $("btnRecheck").addEventListener("click", async () => {
+    // Rechecking really works for its answer — the PyTorch probe alone runs a
+    // Python in another process — so the button says so while it does.
+    const b = busy($("btnRecheck"), "Checking…");
+    try { await Promise.all([loadDeps(), refreshStatus()]); }
+    finally { b.done(); }
+  });
   $("btnInstallAll").addEventListener("click", installAllMissing);
   $("btnStartEngine").addEventListener("click", startEngine);
   $("btnCancelTask").addEventListener("click", () => {

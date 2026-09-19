@@ -203,7 +203,7 @@ def track_files(item: dict) -> list[Path]:
 # --------------------------------------------------------------------------- #
 def convert_audio(src: Path, dest: Path, args: tuple = ()) -> bool:
     """Re-encode one file into another. False if ffmpeg cannot or is absent."""
-    ffmpeg = shutil.which("ffmpeg")
+    ffmpeg = bootstrap.find_tool("ffmpeg")
     if not ffmpeg or src == dest:
         return False
     try:
@@ -219,7 +219,7 @@ def convert_audio(src: Path, dest: Path, args: tuple = ()) -> bool:
 def available_formats(rendered: list[str]) -> list[str]:
     """What Save as can offer: what this ComfyUI writes, and wav if we can."""
     formats = [f for f in rendered if f]
-    if shutil.which("ffmpeg") and "wav" not in formats:
+    if bootstrap.find_tool("ffmpeg") and "wav" not in formats:
         formats.insert(1 if formats else 0, "wav")
     return formats
 
@@ -345,7 +345,7 @@ def _duration_opus(path: Path) -> float | None:
 
 
 def _duration_ffprobe(path: Path) -> float | None:
-    ffprobe = shutil.which("ffprobe")
+    ffprobe = bootstrap.find_tool("ffprobe")
     if not ffprobe:
         return None
     out = subprocess.run(

@@ -161,7 +161,11 @@ by itself when it sees a script the model is unlikely to sing.
   everything, `mp3` is the one to send someone, and `wav` plays anywhere.
   ComfyUI writes flac, mp3 and opus itself; it has no wav encoder, so a wav is
   rendered losslessly and converted by ffmpeg — which is why `wav` only appears
-  when ffmpeg is installed, and the Engine page installs it in one press. Your
+  when ffmpeg is installed, and the Engine page installs it in one press. On
+  Windows that press downloads ffmpeg straight into `data\tools` beside the
+  app — same drive, no winget, no PATH edit, usable the moment it lands. (It
+  used to go through winget, which put it on the system drive and is refused
+  entirely on machines where antivirus guards AppData.) Your
   choice is remembered for the next song.
 
 **Score** is the melody and chords the song gets built on, in ABC notation. Leave the

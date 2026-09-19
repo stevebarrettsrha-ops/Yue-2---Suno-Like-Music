@@ -189,6 +189,93 @@ def run(slow: bool = False) -> Suite:
                 {d["id"]: d for d in
                  manager.dependencies(cfg)}["engine"]["state"] == "missing")
 
+    # A green engine row must say which install answered, or say that it could
+    # not tell — "ok" alone reads as "verified", and an unverifiable engine
+    # squatting the port looked exactly like a healthy one.
+    from unittest.mock import patch
+    cfg_live = {**bootstrap.DEFAULT_CONFIG, "comfy_dir": "/opt/ComfyUI",
+                "models_dir": "/opt/ComfyUI/models"}
+    with patch.object(manager.bootstrap, "comfy_online", lambda url: True):
+        def engine_row(root):
+            return {d["id"]: d for d in
+                    manager.dependencies(cfg_live, ["x.safetensors"],
+                                         root)}["engine"]
+        row = engine_row("/opt/ComfyUI")
+        s.check("a verified engine names its install",
+                row["state"] == "ok" and "/opt/ComfyUI" in row["detail"])
+        row = engine_row("")
+        s.check("an engine with no argv admits it is unverified",
+                row["state"] == "ok" and "does not say" in row["detail"],
+                row["detail"][:80])
+        row = engine_row("/opt/OtherComfy")
+        s.check("a foreign engine is still called out",
+                row["state"] == "warn" and "/opt/OtherComfy" in row["detail"])
+
+    # -- ffmpeg comes to the app, not the app to winget ---------------------
+    # winget's portable install was refused outright on a real machine
+    # ("copy_file: Access is denied" into AppData), and even working it lands
+    # on the system drive. So on Windows the app downloads the zip itself into
+    # data/tools and keeps only the two executables.
+    from unittest.mock import patch
+    import io, zipfile as _zip
+    with Workspace() as root:
+        with patch.object(bootstrap, "TOOLS_DIR", root / "tools"):
+            bundled = root / "tools" / "ffmpeg" / "bin"
+
+            def fake_zip(names):
+                buf = io.BytesIO()
+                with _zip.ZipFile(buf, "w") as zf:
+                    for n in names:
+                        zf.writestr(n, b"binary")
+                return buf.getvalue()
+
+            def served(payload):
+                def dl(url, dest, task, headers):
+                    dest.parent.mkdir(parents=True, exist_ok=True)
+                    dest.write_bytes(payload)
+                return dl
+
+            class T:
+                cancel = False
+                def log(self, m): pass
+                def set(self, **kw): self.detail = kw.get("detail", "")
+
+            good = fake_zip(["ffmpeg-7/bin/ffmpeg.exe", "ffmpeg-7/bin/ffprobe.exe",
+                             "ffmpeg-7/doc/manual.html"])
+            with patch.object(manager, "_stream_download", served(good)):
+                manager._install_ffmpeg_download(T())
+            s.check("ffmpeg.exe lands in data/tools",
+                    (bundled / "ffmpeg.exe").read_bytes() == b"binary")
+            s.check("ffprobe.exe comes along",
+                    (bundled / "ffprobe.exe").exists())
+            s.check("the documentation folder does not",
+                    not (root / "tools" / "ffmpeg" / "doc").exists()
+                    and not list(bundled.glob("*.html")))
+            s.check("the archive is cleaned up",
+                    not (root / "tools" / "ffmpeg.zip").exists())
+
+            s.check("find_tool prefers the copy the app fetched",
+                    bootstrap.find_tool("ffmpeg") == str(bundled / "ffmpeg.exe"))
+            ff = bootstrap.find_tool("ffmpeg")
+            cfg_ff = {**bootstrap.DEFAULT_CONFIG, "comfy_url": "http://127.0.0.1:1"}
+            row = {d["id"]: d for d in manager.dependencies(cfg_ff)}["ffmpeg"]
+            s.check("the Engine page shows where that copy lives",
+                    row["state"] == "ok" and ff in row["detail"], row["detail"][:80])
+
+            bad = fake_zip(["ffmpeg-7/README.txt"])
+            with patch.object(manager, "_stream_download", served(bad)):
+                s.fails_with("an archive without ffmpeg.exe is refused, with "
+                             "the folder to fill by hand",
+                             lambda: manager._install_ffmpeg_download(T()),
+                             RuntimeError, "by hand")
+
+            def refuse(url, dest, task, headers):
+                raise RuntimeError("connection reset")
+            with patch.object(manager, "_stream_download", refuse):
+                s.fails_with("every mirror failing says what to do instead",
+                             lambda: manager._install_ffmpeg_download(T()),
+                             RuntimeError, "by hand")
+
     # -- deleting a model file ---------------------------------------------
     with Workspace() as root:
         models = root / "models"
