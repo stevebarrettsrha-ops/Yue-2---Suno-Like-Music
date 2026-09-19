@@ -538,6 +538,11 @@
           Save to<span class="pill">Library</span>
         </div>
         <p class="note" id="refNote" hidden></p>
+        <div class="orow" id="coverTake" hidden><span class="lab">Cover takes</span>
+          <div class="ctl"><div class="segmented" id="segCover">
+            <button class="on" data-v="melody">Melody only</button>
+            <button data-v="full">Melody + chords</button>
+          </div></div></div>
       </div>
 
       <div class="createbar">
@@ -1181,7 +1186,8 @@ function collectParams() {
     format: $("format").value,
     seed: seedRaw ? Number(seedRaw) : null,
     count: S.count,
-    reference_audio: S.reference
+    reference_audio: S.reference,
+    cover_mode: S.reference ? segGet("segCover") : "melody"
   };
 }
 async function create() {
@@ -1637,6 +1643,7 @@ function renderAttach() {
       ? "Make a cover from a reference song"
       : "Needs sheetsage2_bf16.safetensors — get it on the Models page.";
   }
+  $("coverTake").hidden = !S.reference;
   const voice = segGet("segVocal");
   const v = $("btnVoice");
   const named = voice === "male" ? "Male" : voice === "female" ? "Female"
@@ -1753,6 +1760,7 @@ function wire() {
     $("lyrics").style.opacity = v === "instrumental" ? ".45" : "1";
     renderAttach(); });
   wireSeg("segPlan", null);
+  wireSeg("segCover", null);
   wireSeg("segTiled", null);
 
   [["steps","stepsVal",(v) => String(v)],

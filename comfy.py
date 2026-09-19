@@ -388,16 +388,23 @@ class ComfyClient:
                 "name": {"names": ["audio_encoder_name"], "value": enc,
                          "required": True},
             })
+            # What the transcription takes from the reference: melody alone,
+            # or melody with its chords — SheetSage's own two modes. There is
+            # no rhythm-only mode in the node; the score's timing rides along
+            # with whichever of these is chosen.
+            cover = p.get("cover_mode")
+            cover = cover if cover in ("melody", "full") else "melody"
             g["19"] = self._node("SheetSage2AudioToABC", {
                 "encoder": {"names": ["audio_encoder"], "value": ["18", 0],
                             "required": True},
                 "audio": {"names": ["audio"], "value": ["20", 0], "required": True},
-                "mode": {"names": ["mode"], "value": "melody"},
+                "mode": {"names": ["mode"], "value": cover},
             })
-            # The transcription is melody-only, and the node's own doc says to
-            # run the music node in the matching mode — "full" against a
-            # melody-only score asks for chords the notation never had.
-            mode = "melody"
+            # The node's own doc says to run the music node in the matching
+            # mode — "full" against a melody-only score asks for chords the
+            # notation never had, and the other way round drops chords that
+            # are right there in it.
+            mode = cover
             abc_link = ["19", 0]
             abc_node = self._add_preview(g, "21", abc_link)
         elif p.get("use_abc", True):

@@ -186,10 +186,21 @@ a chord and press Create again — that edited score is then used as-is and the
 planning stage is skipped, so the same tune comes back with your change in it.
 Clear the box to hand the job back to the model.
 
-**Cover from audio** uploads a reference song, transcribes its melody to ABC
-notation with SheetSage2, then re-sings it with your style and lyrics. The
-audio itself is never fed to the model — only the melody. Covers work best when
-new lines match the original phrasing and syllable count.
+**Cover from audio** uploads a reference song, transcribes it to ABC notation
+with SheetSage2, then re-sings it with your style and lyrics. The audio itself
+is never fed to the model — only the transcribed score. Once a reference is
+attached, a **Cover takes** switch appears in More Options: *Melody only*
+transcribes just the tune, *Melody + chords* also carries the harmony across,
+which copies more of the original's sound. Covers work best when new lines
+match the original phrasing and syllable count.
+
+There is no rhythm-and-beats-only mode — SheetSage transcribes melody, or
+melody with chords, and that is all the engine offers. The nearest workflow:
+run a cover once, press the score button on the result, and edit the ABC —
+the note *timing* in that score is the reference's rhythm, so changing the
+pitches while keeping the durations keeps its groove. For a beat *feel*
+without the tune, describe it in Styles instead ("120 bpm", "four-on-the-floor",
+"halftime", "shuffle") — tempo and groove words are real levers on this model.
 
 `Ctrl` + `Enter` creates from anywhere in the page.
 
@@ -236,6 +247,20 @@ bf16.
 **Generation never finishes**
 The first run of any model loads slowly. Check the ComfyUI console output shown
 at the bottom of the setup panel, and the ComfyUI window itself.
+
+**Cover songs come out as gibberish**
+A cover is only as good as its transcription, so look at the score first:
+press the score button on the failed song. If the ABC is already a mess —
+noise notes, no recognisable tune — the problem is upstream of the singing,
+and the fix is a cleaner reference: a section where the melody is exposed
+(a verse or chorus without heavy layering), not an intro, a drop or a wall of
+sound. If the score looks right but the singing is garbled, work the model
+side: match your lyric lines to the original's phrasing and syllable count,
+lower Lyric focus a step, nudge Repetition up slightly, and set a fixed seed
+so each retry changes one thing instead of everything. *Melody only* under
+Cover takes is the more forgiving setting; *Melody + chords* copies more but
+gives a rough transcription more ways to go wrong. This tames gibberish —
+it does not abolish it; transcription plus re-synthesis is a lossy trip.
 
 ---
 

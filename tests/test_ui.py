@@ -84,11 +84,23 @@ def run(slow: bool = False) -> Suite:
             s.check("and the next song would be a cover",
                     page.evaluate("() => collectParams().reference_audio")
                     is not None)
+            s.check("Cover takes appears with a reference attached",
+                    page.evaluate("() => !$('coverTake').hidden"))
+            s.equal("and starts on melody only",
+                    page.evaluate("() => collectParams().cover_mode"), "melody")
+            page.click('#segCover [data-v="full"]')
+            s.equal("choosing Melody + chords is sent with the song",
+                    page.evaluate("() => collectParams().cover_mode"), "full")
+            page.click('#segCover [data-v="melody"]')
             page.click("#btnAudio")
             s.check("one click removes it",
                     "Audio" in page.locator("#btnAudio").inner_text()
                     and page.evaluate("() => collectParams().reference_audio")
                     is None)
+            s.check("Cover takes hides again without a reference",
+                    page.evaluate("() => $('coverTake').hidden")
+                    and page.evaluate("() => collectParams().cover_mode")
+                    == "melody")
             seen = []
             for _ in range(3):
                 page.click("#btnVoice"); time.sleep(0.3)
