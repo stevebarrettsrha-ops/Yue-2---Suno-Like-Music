@@ -307,7 +307,7 @@ def dependencies(cfg: dict, listed: list[str] | None = None,
                   "action": "install" if ours else None})
 
     # ffmpeg (mp3 export)
-    ff = _which("ffmpeg")
+    ff = bootstrap.find_tool("ffmpeg")
     items.append({"id": "ffmpeg", "label": "ffmpeg",
                   "state": "ok" if ff else "warn",
                   "detail": ff or ("Optional — only needed to save songs as "
@@ -404,7 +404,9 @@ def install_dependency(dep_id: str, cfg: dict, opts: dict) -> Task:
             "or run setup again and pick a fresh ComfyUI.")
 
     def run(task: Task) -> None:
-        if dep_id in ("git", "ffmpeg", "python"):
+        if dep_id == "ffmpeg" and platform.system() == "Windows":
+            _install_ffmpeg_download(task)
+        elif dep_id in ("git", "ffmpeg", "python"):
             _install_system_package(dep_id, task)
         elif dep_id == "comfyui":
             _install_comfyui(task, cfg)
@@ -431,9 +433,13 @@ _PACKAGES: dict[str, dict[str, list[tuple[list[str], bool]]]] = {
         "Linux": [(["sudo", "-n", "apt-get", "install", "-y", "git"], False)],
     },
     "ffmpeg": {
-        "Windows": [(["winget", "install", "--id", "Gyan.FFmpeg", "-e",
-                      "--source", "winget", "--accept-package-agreements",
-                      "--accept-source-agreements"], False)],
+        # No Windows entry: winget's portable install copies into a per-user
+        # folder on the system drive and is refused outright on machines where
+        # antivirus or folder protection guards AppData — seen in the field as
+        # "copy_file: Access is denied". ffmpeg is two executables in a zip, so
+        # on Windows the app downloads it itself, into data/tools beside the
+        # songs, where find_tool() picks it up with no PATH change and no
+        # restart. brew and apt manage their own trees and keep working.
         "Darwin": [(["brew", "install", "ffmpeg"], False)],
         "Linux": [(["sudo", "-n", "apt-get", "install", "-y", "ffmpeg"], False)],
     },
@@ -452,6 +458,64 @@ _PACKAGES: dict[str, dict[str, list[tuple[list[str], bool]]]] = {
                     "python3", "python3-venv", "python3-pip"], False)],
     },
 }
+
+
+# Static Windows builds, both stable permalinks that always point at the
+# current release. The first is the same builder winget was fetching from;
+# the second is a fallback published through GitHub releases.
+FFMPEG_URLS = [
+    "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip",
+    "https://github.com/BtbN/FFmpeg-Builds/releases/latest/download/"
+    "ffmpeg-master-latest-win64-gpl.zip",
+]
+
+
+def _install_ffmpeg_download(task: Task) -> None:
+    """Fetch ffmpeg into data/tools, beside the app, on the app's own drive.
+
+    The download is the same resumable stream the model files use, so a
+    stopped one continues. Only ffmpeg.exe and ffprobe.exe are kept — the
+    archives carry a folder of documentation nobody asked for.
+    """
+    tools = bootstrap.TOOLS_DIR / "ffmpeg" / "bin"
+    archive = bootstrap.TOOLS_DIR / "ffmpeg.zip"
+    last_error = "no download source answered"
+    for url in FFMPEG_URLS:
+        task.set(detail="Downloading ffmpeg…")
+        task.log(f"Fetching {url}")
+        try:
+            _stream_download(url, archive, task, {})
+            break
+        except Exception as exc:  # noqa: BLE001 - try the next mirror
+            last_error = str(exc)
+            task.log(f"Could not fetch from there: {last_error[:160]}")
+    else:
+        raise RuntimeError(
+            "ffmpeg could not be downloaded — " + last_error[:200] + ". Put "
+            "ffmpeg.exe and ffprobe.exe into " + str(tools) + " by hand, "
+            "then press Recheck.")
+    if task.cancel:
+        return
+
+    task.set(detail="Unpacking ffmpeg…")
+    import zipfile
+    wanted = {"ffmpeg.exe", "ffprobe.exe"}
+    found = set()
+    tools.mkdir(parents=True, exist_ok=True)
+    with zipfile.ZipFile(archive) as zf:
+        for member in zf.namelist():
+            name = Path(member).name.lower()
+            if name in wanted and name not in found:
+                with zf.open(member) as src, open(tools / name, "wb") as out:
+                    shutil.copyfileobj(src, out)
+                found.add(name)
+                task.log(f"Unpacked {name} -> {tools / name}")
+    archive.unlink(missing_ok=True)
+    if "ffmpeg.exe" not in found:
+        raise RuntimeError("The archive held no ffmpeg.exe — put ffmpeg.exe "
+                           "into " + str(tools) + " by hand, then press "
+                           "Recheck.")
+    task.set(detail=f"ffmpeg is in {tools} — ready to use, nothing to restart.")
 
 
 def _install_system_package(name: str, task: Task) -> None:

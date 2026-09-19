@@ -36,6 +36,11 @@ APP_DIR = Path(__file__).resolve().parent
 DATA_DIR = Path(os.environ.get("YUE_STUDIO_DATA") or (APP_DIR / "data"))
 CONFIG_PATH = DATA_DIR / "config.json"
 
+# Small tools the app fetches for itself live under data/, beside the songs —
+# on the same drive as the install, never scattered into a per-user folder on
+# another disk by a package manager.
+TOOLS_DIR = DATA_DIR / "tools"
+
 COMFY_REPO = "https://github.com/comfyanonymous/ComfyUI.git"
 HF_BASE = "https://huggingface.co/Comfy-Org/YuE2/resolve/main"
 
@@ -260,6 +265,18 @@ def find_python(prog: Progress | None = None) -> str:
         "No Python 3.10 or newer found. Install Python from python.org "
         "(tick 'Add to PATH') and run setup again."
     )
+
+
+def find_tool(name: str) -> str:
+    """A tool's executable: the copy the app downloaded for itself first, then
+    whatever PATH has. The bundled copy wins so that installing from the Engine
+    page works immediately — nothing has to be added to PATH and nothing has to
+    be restarted for a process that read PATH at startup."""
+    bundled = TOOLS_DIR / name / "bin"
+    for candidate in (bundled / f"{name}.exe", bundled / name):
+        if candidate.is_file():
+            return str(candidate)
+    return shutil.which(name) or ""
 
 
 def have_git() -> bool:
