@@ -65,6 +65,12 @@ MODEL_BF16 = (
 
 DEFAULT_COMFY_URL = "http://127.0.0.1:8188"
 
+# ComfyUI model folders a download can target, and the ones named in the
+# extra-paths file when the library is kept somewhere other than ComfyUI/models.
+MODEL_FOLDERS = ["checkpoints", "audio_encoders", "vae", "loras",
+                 "diffusion_models", "text_encoders", "clip", "audio_vae",
+                 "upscale_models"]
+
 
 def clean_url(url) -> str:
     """A base URL fit to build requests on, or "" if it cannot be made into one.
@@ -409,7 +415,7 @@ class ComfyProcess:
         return self.proc is not None and self.proc.poll() is None
 
     def start(self, python: str, comfy_dir: Path, port: int,
-              prog: Progress) -> None:
+              prog: Progress, models_dir: Path | None = None) -> None:
         """Raises RuntimeError with a sentence a person can act on. A ComfyUI
         folder that has moved, or an interpreter that is gone, is an engine
         that cannot start — never a reason the whole app fails to boot."""
@@ -421,6 +427,14 @@ class ComfyProcess:
                 "has moved or been deleted. Run setup again from Settings.")
         cmd = [python, "main.py", "--listen", "127.0.0.1", "--port", str(port),
                "--disable-auto-launch"]
+        # Whatever models folder was chosen is handed to ComfyUI here, so the
+        # setting actually moves where songs are loaded from rather than only
+        # where they are downloaded to.
+        if models_dir:
+            extra = model_paths_file(comfy_dir, models_dir)
+            if extra:
+                cmd += ["--extra-model-paths-config", str(extra)]
+                prog.log(f"Models folder: {models_dir}")
         prog.log("Launching ComfyUI: " + " ".join(cmd))
         creation = 0
         if platform.system() == "Windows":
@@ -488,6 +502,36 @@ def comfy_online(url: str) -> bool:
 # --------------------------------------------------------------------------- #
 # the setup run
 # --------------------------------------------------------------------------- #
+def model_paths_file(comfy_dir: Path, models_dir: Path) -> Path | None:
+    """Point ComfyUI at a models folder that is not its own, or None if it is.
+
+    Setting a models folder used to move only where files were downloaded and
+    looked for — ComfyUI went on reading ComfyUI/models and never saw them, so
+    the setting looked applied while the songs still could not find a model.
+    ComfyUI takes --extra-model-paths-config, so the choice is written out as
+    one of those and handed over when the engine starts.
+
+    Returns None when the folder already is ComfyUI's own, which needs no file.
+    """
+    try:
+        if models_dir.resolve() == (comfy_dir / "models").resolve():
+            return None
+    except OSError:
+        return None
+    if not models_dir.is_dir():
+        return None
+    body = ["# Written by YuE Studio from the models folder set in Settings.",
+            "# Edit that setting rather than this file: it is rewritten on",
+            "# every start.", "yue_studio:",
+            f"  base_path: {models_dir.as_posix()}",
+            "  is_default: true"]
+    body += [f"  {folder}: {folder}/" for folder in MODEL_FOLDERS]
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    path = DATA_DIR / "extra_model_paths.yaml"
+    path.write_text("\n".join(body) + "\n", encoding="utf-8")
+    return path
+
+
 def missing_models(models_dir: Path, cfg: dict) -> list[tuple]:
     wanted = [m for m in MODELS if m[3] or
               (m[0].startswith("audio_encoders") and cfg.get("download_cover_model"))]
@@ -636,7 +680,9 @@ def run_setup(cfg: dict, prog: Progress, comfy: ComfyProcess,
                     "YuE Studio could not work out which Python that install "
                     "uses, so it will not try to start it for you.")
             else:
-                comfy.start(cfg["python"], Path(cfg["comfy_dir"]), port, prog)
+                comfy.start(cfg["python"], Path(cfg["comfy_dir"]), port, prog,
+                            Path(cfg["models_dir"]) if cfg.get("models_dir")
+                            else None)
                 prog.detail("launch", "Waiting for ComfyUI to come up "
                                       "(first start loads slowly)…")
                 if not wait_for_comfy(url, timeout=900):
