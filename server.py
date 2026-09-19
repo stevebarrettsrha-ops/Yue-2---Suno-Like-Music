@@ -16,6 +16,7 @@ import time
 import uuid
 import webbrowser
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import requests
 from flask import Flask, jsonify, request, send_file, send_from_directory
@@ -641,10 +642,83 @@ def api_setup_state():
     return jsonify(snap)
 
 
+def _free_local_port(after: int) -> int:
+    """The first port past `after` that nothing is bound to, found by binding."""
+    import socket
+    for port in range(after + 1, after + 21):
+        try:
+            with socket.socket() as probe:
+                probe.bind(("127.0.0.1", port))
+            return port
+        except OSError:
+            continue
+    return 0
+
+
+def foreign_engine_reason() -> str:
+    """Why the engine answering the configured address cannot be ours, or "".
+
+    Only judged for a local address, and only when there is a managed install
+    to run instead — a remote engine, or an external-mode setup, is the
+    user's own and is never second-guessed. A verified-ours engine with an
+    empty model list is a models problem, not a port problem: moving would
+    bury the real cause, so it never moves.
+    """
+    if not cfg.get("comfy_dir") or not cfg.get("python"):
+        return ""
+    host = (urlsplit(cfg["comfy_url"]).hostname or "").lower()
+    if host not in ("127.0.0.1", "localhost", "::1"):
+        return ""
+    root = client.engine_root()
+    if root:
+        if manager.same_install(cfg["comfy_dir"], root):
+            return ""
+        return "it is answered by the ComfyUI in " + root
+    models_dir = Path(cfg["models_dir"]) if cfg.get("models_dir") else None
+    if (models_dir and models_dir.is_dir()
+            and not bootstrap.missing_models(models_dir, cfg)
+            and client.checkpoints(force=True) == []):
+        return ("it is answered by an engine that does not say where it runs "
+                "from and lists no checkpoints, while the model files are on "
+                "disk")
+    return ""
+
+
+def relocate_engine(reason: str) -> str:
+    """Move to a free port, start the managed install there, keep the choice.
+
+    This is the by-hand recovery — change the address in Settings, press
+    Start the engine — done by the app itself, on every launch and on the
+    button, once the port has been lost to something else. The new address is
+    saved, so later launches go straight to it.
+    """
+    old_url = cfg["comfy_url"]
+    port = _free_local_port(comfy_port(old_url))
+    if not port:
+        raise RuntimeError("Every port near " + old_url + " is taken — set an "
+                           "address by hand in Settings.")
+    cfg["comfy_url"] = f"http://127.0.0.1:{port}"
+    client.url = cfg["comfy_url"]
+    save_config(cfg)
+    progress.log(f"{old_url} is not usable — {reason}. Moving to port {port} "
+                 "and starting the managed ComfyUI there.")
+    comfy_proc.start(cfg["python"], Path(cfg["comfy_dir"]), port, progress,
+                     Path(cfg["models_dir"]) if cfg.get("models_dir") else None)
+    return cfg["comfy_url"]
+
+
 @app.post("/api/comfy/start")
 def api_comfy_start():
     if comfy_online(cfg["comfy_url"]):
-        return jsonify({"ok": True, "already": True})
+        reason = foreign_engine_reason()
+        if not reason:
+            return jsonify({"ok": True, "already": True})
+        try:
+            moved_to = relocate_engine(reason)
+        except RuntimeError as exc:
+            return jsonify({"ok": False, "error": str(exc)}), 400
+        return jsonify({"ok": True, "moved": True, "comfy_url": moved_to,
+                        "reason": reason})
     if not cfg.get("comfy_dir") or not cfg.get("python"):
         if cfg.get("comfy_dir") and not cfg.get("managed", True):
             return jsonify({"ok": False,
@@ -981,15 +1055,23 @@ def main() -> None:
     threading.Thread(target=ws_listener, daemon=True).start()
 
     if cfg.get("setup_complete") and cfg.get("auto_start_comfy", True) \
-            and cfg.get("comfy_dir") and cfg.get("python") \
-            and not comfy_online(cfg["comfy_url"]):
-        port = comfy_port(cfg["comfy_url"])
-        progress.log("Restarting ComfyUI from the last setup…")
+            and cfg.get("comfy_dir") and cfg.get("python"):
         try:
-            comfy_proc.start(cfg["python"], Path(cfg["comfy_dir"]), port,
-                             progress,
-                             Path(cfg["models_dir"]) if cfg.get("models_dir")
-                             else None)
+            if not comfy_online(cfg["comfy_url"]):
+                port = comfy_port(cfg["comfy_url"])
+                progress.log("Restarting ComfyUI from the last setup…")
+                comfy_proc.start(cfg["python"], Path(cfg["comfy_dir"]), port,
+                                 progress,
+                                 Path(cfg["models_dir"])
+                                 if cfg.get("models_dir") else None)
+            else:
+                # Something answers — but launches must not take that on
+                # faith. When it is provably not the managed install, move to
+                # a free port and start the right one, exactly as a person
+                # would in Settings, and keep the new address for next time.
+                reason = foreign_engine_reason()
+                if reason:
+                    relocate_engine(reason)
         except RuntimeError as exc:
             # The app still comes up; the Engine page explains the rest.
             progress.log(str(exc))

@@ -86,6 +86,17 @@ arguments to a process it did not launch, so set the same folder in that
 ComfyUI's own `extra_model_paths.yaml`. The Engine page says when the folder and
 the engine disagree.
 
+### When something else holds the port
+
+Another ComfyUI on the configured address — a Desktop install, a stray process
+from an earlier session — used to make every song fail with "no checkpoints"
+while the files sat on disk. Now, on every launch and on **Start the engine**,
+YuE Studio checks that the engine answering is the one it manages; when it
+provably is not, it moves itself to the next free port, starts the right
+ComfyUI there, and keeps the new address. An engine verified as its own is
+never abandoned, and an address you set to a remote machine or an external
+setup is never second-guessed.
+
 ### Model files
 
 Downloaded from `Comfy-Org/YuE2` on HuggingFace into your ComfyUI models folder:

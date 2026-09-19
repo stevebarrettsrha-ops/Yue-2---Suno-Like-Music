@@ -245,6 +245,84 @@ def run(slow: bool = False) -> Suite:
                         (final.get("error") or "")[:80])
             finally:
                 again.stop()
+
+    # -- a port lost to a different ComfyUI is taken back, by itself --------
+    # Seen in the field: something else held the configured port, every song
+    # failed saying there was no model, and the person was told to change the
+    # address by hand. The app does that move itself now — on the Start
+    # button and on every launch — and keeps the new address.
+    import shutil as _sh, tempfile as _tmp
+    fake = Path(_tmp.mkdtemp(prefix="own-comfy-"))
+    (fake / "models" / "checkpoints").mkdir(parents=True)
+    (fake / "models" / "checkpoints" / "yue2_3b_int8_convrot.safetensors"
+     ).write_bytes(b"0")
+    (fake / "models" / "audio_encoders").mkdir(parents=True)
+    (fake / "models" / "audio_encoders" / "sheetsage2_bf16.safetensors"
+     ).write_bytes(b"0")
+    (fake / "tests").mkdir()
+    for name in ("mock_comfy.py", "object_info.json"):
+        _sh.copy(Path(__file__).resolve().parent / name, fake / "tests" / name)
+    (fake / "main.py").write_text(
+        "import sys, runpy\n"
+        "port = sys.argv[sys.argv.index('--port') + 1]\n"
+        "sys.argv = ['mock_comfy.py', port]\n"
+        "runpy.run_path('tests/mock_comfy.py', run_name='__main__')\n")
+
+    def wait_engine_moved(api, old_url):
+        return wait_for(lambda: (lambda st: st["config"]["comfy_url"] != old_url
+                                 and st["comfy_online"])(
+            requests.get(f"{api}/api/status", timeout=10).json()), 40)
+
+    # the button: a squatter that names a foreign folder
+    with comfy(delay=1, MOCK_COMFY_ROOT="/somewhere/else") as squatter, \
+            Workspace() as data, \
+            studio(squatter.url, data, comfy_dir=str(fake),
+                   models_dir=str(fake / "models"),
+                   python=sys.executable) as app:
+        api = app.url
+        moved = requests.post(f"{api}/api/comfy/start", timeout=30).json()
+        s.check("Start the engine moves off a foreign engine's port",
+                moved.get("moved") is True
+                and moved.get("comfy_url") != squatter.url, str(moved)[:90])
+        s.check("and the managed engine comes up on the new address",
+                wait_engine_moved(api, squatter.url))
+        st = requests.get(f"{api}/api/status", timeout=10).json()
+        s.check("the new address is saved for next time",
+                st["config"]["comfy_url"] == moved["comfy_url"])
+        made = requests.post(f"{api}/api/generate",
+                             json={"style": "reggae", "lyrics": "x"},
+                             timeout=30).json()
+        jobs = finish_jobs(api, 40)
+        mine = [j for j in jobs if j["id"] in made.get("jobs", [])]
+        s.check("and a song finishes there",
+                bool(mine) and all(j["status"] == "done" for j in mine),
+                str([(j["status"], (j.get("error") or "")[:60])
+                     for j in mine])[:90])
+
+    # every launch: the server does the same move at boot, unprompted
+    with comfy(delay=1, MOCK_NO_ARGV="1",
+               MOCK_BLANK_CKPT_CALLS="9999") as mute, \
+            Workspace() as data, \
+            studio(mute.url, data, comfy_dir=str(fake),
+                   models_dir=str(fake / "models"),
+                   python=sys.executable, auto_start_comfy=True) as app:
+        s.check("a launch takes the port back from an engine that will not "
+                "say where it runs from and offers no checkpoints",
+                wait_engine_moved(app.url, mute.url))
+
+    # the guard: an engine verified as ours is never abandoned, even with an
+    # empty model list — that is a models problem a new port cannot fix
+    with comfy(delay=1, MOCK_COMFY_ROOT=str(fake),
+               MOCK_BLANK_CKPT_CALLS="9999") as ours, \
+            Workspace() as data, \
+            studio(ours.url, data, comfy_dir=str(fake),
+                   models_dir=str(fake / "models"),
+                   python=sys.executable) as app:
+        r = requests.post(f"{app.url}/api/comfy/start", timeout=30).json()
+        st = requests.get(f"{app.url}/api/status", timeout=10).json()
+        s.check("our own engine with a models problem stays put",
+                r.get("already") is True
+                and st["config"]["comfy_url"] == ours.url, str(r)[:80])
     return s
 
 
