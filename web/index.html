@@ -1616,6 +1616,38 @@ async function pollSetup() {
 }
 
 /* ========================= status ========================= */
+const PLUS_ICON = '<svg viewBox="0 0 24 24" style="width:15px;height:15px">' +
+  '<path d="M12 5v14M5 12h14"/></svg>';
+const X_ICON = '<svg viewBox="0 0 24 24" style="width:15px;height:15px">' +
+  '<path d="M6 6l12 12M18 6 6 18"/></svg>';
+/* Attached things must look attached. Both of these used to keep their
+   "+" face whatever their state: the reference rode along on every next
+   song with nothing on screen saying so, and the voice button could only
+   flip male/female — the way back to Any was hidden in More Options. */
+function renderAttach() {
+  const a = $("btnAudio");
+  if (S.reference) {
+    a.classList.add("on");
+    a.innerHTML = X_ICON + esc(S.refName || "Reference");
+    a.title = "Remove the reference — the next song stops being a cover.";
+  } else {
+    a.classList.remove("on");
+    a.innerHTML = PLUS_ICON + "Audio";
+    a.title = (S.status && S.status.has_cover_model)
+      ? "Make a cover from a reference song"
+      : "Needs sheetsage2_bf16.safetensors — get it on the Models page.";
+  }
+  const voice = segGet("segVocal");
+  const v = $("btnVoice");
+  const named = voice === "male" ? "Male" : voice === "female" ? "Female"
+    : voice === "instrumental" ? "None" : "";
+  v.classList.toggle("on", !!named);
+  v.innerHTML = named ? PLUS_ICON + "Voice: " + named : PLUS_ICON + "Voice";
+  v.title = named
+    ? "Click to change — it cycles back to Any."
+    : "Ask for a male or female vocal.";
+}
+
 async function refreshStatus() {
   let st; try { st = await api("/api/status"); } catch (e) { return; }
   S.status = st;
@@ -1643,10 +1675,10 @@ async function refreshStatus() {
     });
     sel.value = keep;
   }
-  $("btnAudio").disabled = !st.has_cover_model;
-  $("btnAudio").title = st.has_cover_model
-    ? "Make a cover from a reference song"
-    : "Needs sheetsage2_bf16.safetensors — get it on the Models page.";
+  // Enabled while a reference is attached even without the cover model, so
+  // removing it is never locked out. The label and title live in renderAttach.
+  $("btnAudio").disabled = !st.has_cover_model && !S.reference;
+  renderAttach();
   const c = st.config || {};
   // Only while the dialog is closed: it fills itself on open, and a poll
   // landing mid-edit must not overwrite what is being typed.
@@ -1718,7 +1750,8 @@ function wire() {
 
   wireSeg("segVocal", (v) => {
     $("lyrics").disabled = v === "instrumental";
-    $("lyrics").style.opacity = v === "instrumental" ? ".45" : "1"; });
+    $("lyrics").style.opacity = v === "instrumental" ? ".45" : "1";
+    renderAttach(); });
   wireSeg("segPlan", null);
   wireSeg("segTiled", null);
 
@@ -1785,20 +1818,24 @@ function wire() {
     $("style").value = randomStyle(); syncChips(); saveDraft();
     toast("Style written. Edit it however you like."); });
   $("btnVoice").addEventListener("click", () => {
-    const v = segGet("segVocal") === "female" ? "male" : "female";
-    segSet("segVocal", v); $("cardMore").open = true; saveDraft();
-    toast(v === "female" ? "Asking for a female vocal." : "Asking for a male vocal."); });
+    const order = ["", "male", "female"];
+    const v = order[(order.indexOf(segGet("segVocal")) + 1) % order.length];
+    segSet("segVocal", v); saveDraft(); renderAttach();
+    toast(v === "male" ? "Asking for a male vocal."
+      : v === "female" ? "Asking for a female vocal."
+      : "No preference — the style text decides the voice."); });
   $("btnAudio").addEventListener("click", () => {
     if (S.reference) {
-      S.reference = null; $("refNote").hidden = true;
-      $("btnAudio").classList.remove("on"); toast("Reference cleared."); return; }
+      S.reference = null; S.refName = null; $("refNote").hidden = true;
+      renderAttach(); toast("Reference removed — songs are no longer covers.");
+      return; }
     $("refFile").click(); });
   $("refFile").addEventListener("change", async (e) => {
     const f = e.target.files && e.target.files[0]; if (!f) return;
     const fd = new FormData(); fd.append("file", f);
     try {
       const r = await api("/api/upload-reference", { method:"POST", body:fd });
-      S.reference = r.name; $("btnAudio").classList.add("on");
+      S.reference = r.name; S.refName = f.name; renderAttach();
       $("refNote").hidden = false;
       $("refNote").textContent = "Melody taken from " + f.name +
         ". Keep the new lines close in length to the original.";
@@ -1910,6 +1947,7 @@ fillDurations(900);
 loadDraft();
 syncChips();
 abcNote();
+renderAttach();
 wire();
 wirePlayer();
 show("home");
