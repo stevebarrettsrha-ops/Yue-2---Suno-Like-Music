@@ -70,6 +70,22 @@ All HuggingFace work happens here:
   v0.35.1+ is recommended on AMD cards.
 - An NVIDIA GPU with 8 GB+ VRAM for reasonable speed. CPU works but is slow.
 
+### Keeping models somewhere else
+
+Set **Models folder** in Settings to any folder you like — another drive, or a
+models library you already share with other tools. Downloads go there, and a
+ComfyUI that YuE Studio starts is handed that folder through ComfyUI's own
+`--extra-model-paths-config`, so it loads from there too. The file is written to
+`data/extra_model_paths.yaml` on every start; edit the setting, not the file.
+
+The folder wants ComfyUI's usual layout — `checkpoints/`, `audio_encoders/` and
+so on — which is what the Models page downloads into anyway.
+
+One case it cannot cover: a ComfyUI you start yourself. Nothing here passes
+arguments to a process it did not launch, so set the same folder in that
+ComfyUI's own `extra_model_paths.yaml`. The Engine page says when the folder and
+the engine disagree.
+
 ### Model files
 
 Downloaded from `Comfy-Org/YuE2` on HuggingFace into your ComfyUI models folder:

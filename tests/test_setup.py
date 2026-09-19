@@ -109,6 +109,38 @@ def run(slow: bool = False) -> Suite:
                 deps["torch"]["action"] == "install"
                 and deps["comfy_reqs"]["action"] == "install")
 
+    # -- choosing a models folder has to reach ComfyUI ---------------------
+    # Setting it used to move only where files were downloaded and looked for;
+    # ComfyUI went on reading its own folder, so the setting looked applied
+    # while songs still could not find a model.
+    with Workspace() as root:
+        comfy_dir = root / "ComfyUI"
+        (comfy_dir / "models").mkdir(parents=True)
+        elsewhere = root / "my-models"
+        (elsewhere / "checkpoints").mkdir(parents=True)
+
+        s.check("ComfyUI's own folder needs no extra-paths file",
+                bootstrap.model_paths_file(comfy_dir, comfy_dir / "models")
+                is None)
+        s.check("a folder that does not exist is not written out",
+                bootstrap.model_paths_file(comfy_dir, root / "nope") is None)
+
+        written = bootstrap.model_paths_file(comfy_dir, elsewhere)
+        s.check("a folder elsewhere is written out for ComfyUI",
+                written is not None and written.exists())
+        body = written.read_text()
+        s.check("it names the chosen folder as the base path",
+                elsewhere.as_posix() in body, body[:120])
+        s.check("it marks those folders as the default",
+                "is_default: true" in body)
+        for folder in ("checkpoints", "audio_encoders"):
+            s.check(f"it maps {folder}", f"{folder}: {folder}/" in body)
+        s.check("every folder a download can target is mapped",
+                all(f"{f}: {f}/" in body for f in manager.MODEL_FOLDERS))
+        s.check("rewriting it is stable",
+                bootstrap.model_paths_file(comfy_dir, elsewhere)
+                .read_text() == body)
+
     # -- two sources of truth that can disagree ----------------------------
     # The model row stats a folder; the song is built from what the engine
     # lists. When those disagree the page used to say "All files present" and

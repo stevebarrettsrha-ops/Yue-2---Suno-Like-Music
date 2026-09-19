@@ -35,10 +35,9 @@ from bootstrap import (APP_DIR, MODELS, MODEL_BF16, existing_python,
 DEFAULT_ENDPOINT = "https://huggingface.co"
 DEFAULT_REPO = "Comfy-Org/YuE2"
 
-# ComfyUI model folders a download can target.
-MODEL_FOLDERS = ["checkpoints", "audio_encoders", "vae", "loras",
-                 "diffusion_models", "text_encoders", "clip", "audio_vae",
-                 "upscale_models"]
+# One list, shared with the extra-paths file bootstrap writes for ComfyUI, so a
+# folder you can download into is always a folder ComfyUI has been told about.
+MODEL_FOLDERS = bootstrap.MODEL_FOLDERS
 
 # Files worth a one-tap button on the Models page.
 CURATED = [

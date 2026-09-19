@@ -656,7 +656,8 @@ def api_comfy_start():
                         "error": "Run setup first."}), 400
     port = comfy_port(cfg["comfy_url"])
     try:
-        comfy_proc.start(cfg["python"], Path(cfg["comfy_dir"]), port, progress)
+        comfy_proc.start(cfg["python"], Path(cfg["comfy_dir"]), port, progress,
+                     Path(cfg["models_dir"]) if cfg.get("models_dir") else None)
     except RuntimeError as exc:
         return jsonify({"ok": False, "error": str(exc)}), 400
     return jsonify({"ok": True})
@@ -986,7 +987,9 @@ def main() -> None:
         progress.log("Restarting ComfyUI from the last setup…")
         try:
             comfy_proc.start(cfg["python"], Path(cfg["comfy_dir"]), port,
-                             progress)
+                             progress,
+                             Path(cfg["models_dir"]) if cfg.get("models_dir")
+                             else None)
         except RuntimeError as exc:
             # The app still comes up; the Engine page explains the rest.
             progress.log(str(exc))
