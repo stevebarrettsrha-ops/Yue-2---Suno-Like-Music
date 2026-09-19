@@ -326,6 +326,11 @@
 
   @media (max-width:1180px){
     .app{grid-template-columns:var(--rail) 1fr;grid-template-rows:1fr auto var(--player)}
+    /* The rail spans both rows of the wide layout. Here row 2 is the workspace
+       across the full width, so column 1 of it is taken and a rail still asking
+       for rows 1-2 cannot be placed — grid then invents a third column and puts
+       it on the right, which reads as the whole page being upside down. Pin it. */
+    .rail{grid-row:1;grid-column:1}
     .main{grid-column:2;border-right:0}
     .work{grid-column:1/3;grid-row:2;max-height:42vh;border-top:1px solid var(--line-soft)}
     .playerbar{grid-column:1/3;grid-row:3}
@@ -1456,8 +1461,18 @@ async function pollTasks() {
 }
 async function startEngine() {
   try {
-    await api("/api/comfy/start", { method:"POST" });
-    toast("Starting ComfyUI. The first run takes a moment.");
+    const r = await api("/api/comfy/start", { method:"POST" });
+    // Nothing is started when the address already answers. Saying "starting"
+    // there is how this button came to look broken: pressed, claims to work,
+    // changes nothing, and never mentions that something else holds the port.
+    if (r && r.already) {
+      toast("Something is already answering on that address, so nothing was " +
+            "started. If songs cannot find the model, it is not this ComfyUI — " +
+            "check the Engine page.", true);
+    } else {
+      toast("Starting ComfyUI. The first run takes a moment.");
+    }
+    loadDeps();
   } catch (e) { toast(e.message, true); }
 }
 

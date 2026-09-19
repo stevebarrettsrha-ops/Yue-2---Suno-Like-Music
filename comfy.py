@@ -151,6 +151,30 @@ class ComfyClient:
             "problem."
         )
 
+    def engine_root(self) -> str:
+        """The folder of the ComfyUI actually answering this address.
+
+        /system_stats reports the process's own argv, which starts with the
+        main.py it was launched from. Comparing that against the install being
+        managed is the only way to notice that the port is held by a *different*
+        ComfyUI — which looks exactly like a broken model download, because the
+        managed folder has the files and the engine answering has none of them.
+
+        Empty when it cannot be told: older builds do not report argv.
+        """
+        try:
+            r = requests.get(f"{self.url}/system_stats", timeout=10)
+            r.raise_for_status()
+            argv = ((r.json() or {}).get("system") or {}).get("argv") or []
+        except Exception:
+            return ""
+        for arg in argv:
+            if isinstance(arg, str) and arg.lower().endswith("main.py"):
+                # Both separators appear: a Windows path read on any platform.
+                cut = max(arg.rfind("/"), arg.rfind("\\"))
+                return arg[:cut] if cut > 0 else ""
+        return ""
+
     def audio_encoders(self) -> list[str]:
         try:
             return self.combo_options(

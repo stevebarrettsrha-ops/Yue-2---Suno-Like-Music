@@ -842,7 +842,13 @@ def api_delete(track_id: str):
 # --------------------------------------------------------------------------- #
 @app.get("/api/deps")
 def api_deps():
-    return jsonify({"items": manager.dependencies(cfg),
+    # What ComfyUI itself offers, so the model row can tell a file that has not
+    # been downloaded apart from one the engine cannot see. None means it could
+    # not be asked, which is not the same as an empty list.
+    online = comfy_online(cfg["comfy_url"])
+    listed = client.checkpoints() if online else None
+    engine_root = client.engine_root() if online else ""
+    return jsonify({"items": manager.dependencies(cfg, listed, engine_root),
                     "os": __import__("platform").system(),
                     "torch_index": cfg.get("torch_index", "")})
 
