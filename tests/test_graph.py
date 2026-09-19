@@ -45,6 +45,11 @@ def run(slow: bool = False) -> Suite:
             "instrumental": dict(style="jazz", lyrics="ignored", instrumental=True),
             "edited score": dict(style="folk", lyrics="hi", abc="X:1\nK:C\nCDEF|"),
             "cover": dict(style="soul", lyrics="hi", reference_audio="ref.wav"),
+            "cover full": dict(style="soul", lyrics="hi",
+                               reference_audio="ref.wav", cover_mode="full"),
+            "cover junk mode": dict(style="soul", lyrics="hi",
+                                    reference_audio="ref.wav",
+                                    cover_mode="beats-only"),
             "mp3": dict(style="pop", lyrics="hi", format="mp3"),
             "opus": dict(style="pop", lyrics="hi", format="opus"),
             "unknown format falls back": dict(style="pop", lyrics="hi", format="wav"),
@@ -78,6 +83,12 @@ def run(slow: bool = False) -> Suite:
             s.check("cover runs the melody mode SheetSage transcribes",
                     g("cover")["22"]["inputs"]["mode"] == "melody"
                     and g("cover")["19"]["inputs"]["mode"] == "melody")
+            s.check("cover full puts both nodes in full mode",
+                    g("cover full")["19"]["inputs"]["mode"] == "full"
+                    and g("cover full")["22"]["inputs"]["mode"] == "full")
+            s.check("an unknown cover mode falls back to melody",
+                    g("cover junk mode")["19"]["inputs"]["mode"] == "melody"
+                    and g("cover junk mode")["22"]["inputs"]["mode"] == "melody")
             s.check("mp3 brings the quality its format needs",
                     g("mp3")["10"]["inputs"].get("quality") == "V0")
             s.check("flac brings no quality input",

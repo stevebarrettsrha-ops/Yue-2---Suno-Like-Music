@@ -108,6 +108,9 @@ def clean_generate(body: dict) -> dict:
         "scheduler": as_text(body.get("scheduler"))[:60] or None,
         "reference_audio": as_text(body.get("reference_audio"))[:260] or None,
         "mode": mode if mode in ("full", "melody") else "full",
+        "cover_mode": (as_text(body.get("cover_mode"))
+                       if as_text(body.get("cover_mode")) in ("melody", "full")
+                       else "melody"),
         "instrumental": bool(body.get("instrumental")),
         "use_abc": bool(body.get("use_abc", True)),
         "tiled_decode": bool(body.get("tiled_decode", True)),
