@@ -54,8 +54,8 @@ class ComfyClient:
                 self._schema_at = time.time()
             return self._schema
 
-    def node_inputs(self, class_type: str) -> dict:
-        info = self.schema().get(class_type)
+    def node_inputs(self, class_type: str, force: bool = False) -> dict:
+        info = self.schema(force=force).get(class_type)
         if not info:
             raise ComfyError(
                 f"This ComfyUI has no '{class_type}' node. YuE2 needs ComfyUI "
@@ -108,15 +108,15 @@ class ComfyClient:
         # those are not plain choices and belong to _dynamic_options().
         return [str(o) for o in options if isinstance(o, (str, int, float))]
 
-    def checkpoints(self) -> list[str]:
+    def checkpoints(self, force: bool = False) -> list[str]:
         try:
-            return self.combo_options(
-                self.node_inputs("CheckpointLoaderSimple").get("ckpt_name"))
+            spec = self.node_inputs("CheckpointLoaderSimple", force=force)
+            return self.combo_options(spec.get("ckpt_name"))
         except Exception:
             return []
 
-    def pick_checkpoint(self, preferred: str = "") -> str:
-        names = self.checkpoints()
+    @staticmethod
+    def _best(names: list[str], preferred: str = "") -> str | None:
         if preferred and preferred in names:
             return preferred
         yue = [n for n in names if "yue" in n.lower()]
@@ -124,11 +124,31 @@ class ComfyClient:
             # int8 loads on far more cards; prefer it when both are present.
             int8 = [n for n in yue if "int8" in n.lower()]
             return (int8 or yue)[0]
-        if names:
-            return names[0]
+        return names[0] if names else None
+
+    def pick_checkpoint(self, preferred: str = "") -> str:
+        chosen = self._best(self.checkpoints(), preferred)
+        if chosen:
+            return chosen
+
+        # An empty list is not proof the file is missing. ComfyUI scans its
+        # model folders once and caches the result, and this client caches
+        # /object_info for two minutes on top of that — so a checkpoint that
+        # arrived, or a ComfyUI that restarted, after either snapshot reads as
+        # "nothing installed". Ask again with both caches bypassed before
+        # blaming the download.
+        chosen = self._best(self.checkpoints(force=True), preferred)
+        if chosen:
+            return chosen
+
         raise ComfyError(
-            "No checkpoint found in ComfyUI/models/checkpoints. Run setup again "
-            "to download the YuE2 model."
+            "ComfyUI is running but lists no checkpoints, so there is nothing "
+            "to load the song model from. If the Engine page says the model "
+            "files are present, the file is on disk and ComfyUI has not picked "
+            "it up: close YuE Studio and start it again, which restarts "
+            "ComfyUI and makes it rescan models/checkpoints. Only if the "
+            "Engine page also reports the files missing is the download the "
+            "problem."
         )
 
     def audio_encoders(self) -> list[str]:

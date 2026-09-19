@@ -144,15 +144,30 @@ def run(slow: bool = False) -> Suite:
                      lambda: _drop_input(schema, mock.url, "KSampler", "model")
                      .build_prompt({"style": "x"}),
                      ComfyError, "no input for 'model'")
-        s.fails_with("no checkpoint downloaded yet",
-                     lambda: _blank_combo(schema, mock.url, "CheckpointLoaderSimple",
-                                          "ckpt_name").build_prompt({"style": "x"}),
-                     ComfyError, "no checkpoint found")
         s.fails_with("cover without the SheetSage model",
                      lambda: _blank_combo(schema, mock.url, "AudioEncoderLoader",
                                           "audio_encoder_name")
                      .build_prompt({"style": "x", "reference_audio": "r.wav"}),
                      ComfyError, "sheetsage")
+
+        # -- an empty checkpoint list is not proof the file is missing -----
+        # ComfyUI caches its model listing and this client caches the schema
+        # on top, so a checkpoint that arrives late, or a ComfyUI that has
+        # restarted, reads as "nothing installed" until something rescans.
+        with comfy(**{"MOCK_BLANK_CKPT_CALLS": "1"}) as late:
+            client_late = ComfyClient(late.url)
+            s.check("a checkpoint hidden by a stale listing reads as empty",
+                    client_late.checkpoints() == [])
+            s.check("and building a song refetches rather than giving up",
+                    "int8" in client_late.pick_checkpoint())
+
+        with comfy(**{"MOCK_BLANK_CKPT_CALLS": "9999"}) as none:
+            s.fails_with("a ComfyUI that really lists no checkpoints says so",
+                         lambda: ComfyClient(none.url).build_prompt({"style": "x"}),
+                         ComfyError, "lists no checkpoints")
+            s.fails_with("and points at a restart, not at downloading again",
+                         lambda: ComfyClient(none.url).build_prompt({"style": "x"}),
+                         ComfyError, "start it again")
 
         # -- PreviewAny is a nicety, never a requirement --------------------
         no_preview = without("PreviewAny")
