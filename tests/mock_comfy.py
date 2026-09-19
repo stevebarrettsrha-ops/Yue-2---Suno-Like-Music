@@ -16,12 +16,33 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 OBJECT_INFO = json.loads(
     (pathlib.Path(__file__).with_name("object_info.json")).read_text())
 
+# ComfyUI scans its model folders once and serves the cached list. A checkpoint
+# that lands afterwards is invisible until it rescans, which is what a restart
+# is for. BLANK_CKPT_CALLS reproduces that: the first N /object_info answers
+# carry no checkpoints, the rest carry the real list.
+BLANK_CKPT_CALLS = int(os.environ.get("MOCK_BLANK_CKPT_CALLS", "0"))
+OBJECT_INFO_CALLS = 0
+
 HISTORY = {}
 FORMATS = {}          # which format each prompt asked to be saved as
 QUEUE_PENDING = []          # prompt_ids waiting
 QUEUE_RUNNING = []          # prompt_ids executing
 LOCK = threading.Lock()
 WS_CLIENTS = []
+
+
+def _object_info():
+    """The schema, with the checkpoint list withheld for the first N calls."""
+    global OBJECT_INFO_CALLS
+    with LOCK:
+        OBJECT_INFO_CALLS += 1
+        withhold = OBJECT_INFO_CALLS <= BLANK_CKPT_CALLS
+    if not withhold:
+        return OBJECT_INFO
+    out = json.loads(json.dumps(OBJECT_INFO))
+    spec = out["CheckpointLoaderSimple"]["input"]["required"]["ckpt_name"]
+    spec[0] = []
+    return out
 
 
 def ws_send(obj):
@@ -190,7 +211,7 @@ class H(BaseHTTPRequestHandler):
             self.close_connection = True
             return
         if p == "/object_info":
-            self._send(200, OBJECT_INFO)
+            self._send(200, _object_info())
         elif p == "/system_stats":
             self._send(200, {"system": {"comfyui_version": "0.35.0"}})
         elif p.startswith("/history/"):
