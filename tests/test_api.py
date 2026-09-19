@@ -246,6 +246,18 @@ def run(slow: bool = False) -> Suite:
             finally:
                 again.stop()
 
+    # -- the Settings dialog reads the truth in milliseconds ----------------
+    # It used to be filled by the status poll, which can take seconds; a Save
+    # pressed before it returned wrote an unchecked box over a real setting —
+    # which is how auto-start got switched off by someone changing the address.
+    with comfy(delay=1) as engine, Workspace() as data, \
+            studio(engine.url, data, auto_start_comfy=True) as app:
+        t0 = time.time()
+        got = requests.get(f"{app.url}/api/config", timeout=10).json()["config"]
+        s.check("the saved settings answer fast and carry the flags",
+                time.time() - t0 < 1.0 and got.get("auto_start_comfy") is True
+                and "comfy_url" in got, str(got)[:80])
+
     # -- a port lost to a different ComfyUI is taken back, by itself --------
     # Seen in the field: something else held the configured port, every song
     # failed saying there was no model, and the person was told to change the

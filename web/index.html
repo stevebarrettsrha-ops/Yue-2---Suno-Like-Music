@@ -1339,10 +1339,10 @@ function busy(btn, label) {
     done() { btn.disabled = false; btn.innerHTML = old; },
   };
 }
-async function loadDeps() {
+async function loadDeps(fresh) {
   const box = $("depList");
   try {
-    const d = await api("/api/deps");
+    const d = await api("/api/deps" + (fresh ? "?fresh=1" : ""));
     $("torchIndex").value = d.torch_index || "";
     box.innerHTML = ""; let bad = 0;
     d.items.forEach((it) => {
@@ -1648,8 +1648,12 @@ async function refreshStatus() {
     ? "Make a cover from a reference song"
     : "Needs sheetsage2_bf16.safetensors — get it on the Models page.";
   const c = st.config || {};
-  $("cfgUrl").value = c.comfy_url || ""; $("cfgModels").value = c.models_dir || "";
-  $("cfgDir").value = c.comfy_dir || ""; $("cfgAuto").checked = !!c.auto_start_comfy;
+  // Only while the dialog is closed: it fills itself on open, and a poll
+  // landing mid-edit must not overwrite what is being typed.
+  if ($("settingsVeil").hidden) {
+    $("cfgUrl").value = c.comfy_url || ""; $("cfgModels").value = c.models_dir || "";
+    $("cfgDir").value = c.comfy_dir || ""; $("cfgAuto").checked = !!c.auto_start_comfy;
+  }
   $("cfgNote").textContent = st.schema_error || "";
   $("gpuMetric").querySelector("span").textContent =
     st.ready ? "ready" : st.comfy_online ? "loading" : "offline";
@@ -1696,7 +1700,7 @@ function randomStyle() {
 function wire() {
   document.querySelectorAll("[data-view]").forEach((b) =>
     b.addEventListener("click", () => show(b.dataset.view)));
-  $("navSettings").addEventListener("click", () => { $("settingsVeil").hidden = false; });
+  $("navSettings").addEventListener("click", openSettings);
   $("enginePill").addEventListener("click", () => show("engine"));
 
   document.querySelectorAll('.segmented [role="tab"]').forEach((b) =>
@@ -1840,7 +1844,7 @@ function wire() {
     // Rechecking really works for its answer — the PyTorch probe alone runs a
     // Python in another process — so the button says so while it does.
     const b = busy($("btnRecheck"), "Checking…");
-    try { await Promise.all([loadDeps(), refreshStatus()]); }
+    try { await Promise.all([loadDeps(true), refreshStatus()]); }
     finally { b.done(); }
   });
   $("btnInstallAll").addEventListener("click", installAllMissing);
@@ -1859,6 +1863,27 @@ function wire() {
   $("btnHide").addEventListener("click", () => { $("setupVeil").hidden = true; });
   $("btnFinish").addEventListener("click", () => { $("setupVeil").hidden = true; });
   $("btnCloseCfg").addEventListener("click", () => { $("settingsVeil").hidden = true; });
+  // Fill the dialog from the saved config the moment it opens, from a call
+  // that answers instantly, and keep Save locked until the fields hold real
+  // values. They used to be filled by the status poll, which can take
+  // seconds — a Save pressed before it returned wrote the checkboxes' blank
+  // defaults over real settings, which is how "start ComfyUI with YuE
+  // Studio" got switched off by someone changing the address.
+  async function openSettings() {
+    $("settingsVeil").hidden = false;
+    $("btnSaveCfg").disabled = true;
+    try {
+      const r = await api("/api/config");
+      const c = r.config || {};
+      $("cfgUrl").value = c.comfy_url || "";
+      $("cfgModels").value = c.models_dir || "";
+      $("cfgDir").value = c.comfy_dir || "";
+      $("cfgAuto").checked = !!c.auto_start_comfy;
+      $("btnSaveCfg").disabled = false;
+    } catch (e) {
+      toast("Could not read the saved settings: " + e.message, true);
+    }
+  }
   $("btnReRun").addEventListener("click", () => {
     $("settingsVeil").hidden = true; openSetup(); });
   $("btnStartComfy").addEventListener("click", startEngine);

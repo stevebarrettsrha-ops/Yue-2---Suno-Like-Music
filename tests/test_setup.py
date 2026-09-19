@@ -211,6 +211,26 @@ def run(slow: bool = False) -> Suite:
         s.check("a foreign engine is still called out",
                 row["state"] == "warn" and "/opt/OtherComfy" in row["detail"])
 
+    # -- the torch probe is paid once, not per page view --------------------
+    # Importing torch in a subprocess costs whole seconds; the Engine page
+    # visiting it every time read as the whole app lagging.
+    from unittest.mock import patch as _patch
+    calls = []
+    real_run = manager.subprocess.run
+    def counting_run(*a, **k):
+        calls.append(a[0][0])
+        class R: returncode = 1; stdout = ""
+        return R()
+    manager._TORCH_PROBE.clear()
+    with _patch.object(manager.subprocess, "run", counting_run):
+        first = manager._probe_torch(sys.executable)
+        again = manager._probe_torch(sys.executable)
+        s.check("the second look is answered from memory",
+                len(calls) == 1 and first == again, f"{len(calls)} probe runs")
+        manager._probe_torch(sys.executable, fresh=True)
+        s.check("Recheck really re-probes", len(calls) == 2)
+    manager._TORCH_PROBE.clear()
+
     # -- ffmpeg comes to the app, not the app to winget ---------------------
     # winget's portable install was refused outright on a real machine
     # ("copy_file: Access is denied" into AppData), and even working it lands
