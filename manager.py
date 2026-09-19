@@ -359,10 +359,11 @@ def dependencies(cfg: dict, listed: list[str] | None = None,
         items.append({"id": "engine", "label": "Engine", "state": "warn",
                       "detail": cfg["comfy_url"] + " is answered by the ComfyUI "
                                 "in " + engine_root + ", not the one in "
-                                + cfg.get("comfy_dir", "") + ". Close that "
-                                "ComfyUI, or point YuE Studio at its models "
-                                "folder in Settings.",
-                      "action": None})
+                                + cfg.get("comfy_dir", "") + ". Press Start "
+                                "the engine, or restart YuE Studio — either "
+                                "one moves to a free port and starts the "
+                                "right ComfyUI.",
+                      "action": "start"})
     elif online:
         # Say which install answered even when nothing is wrong. When the
         # engine will not say (it reports no argv, or none of it names a

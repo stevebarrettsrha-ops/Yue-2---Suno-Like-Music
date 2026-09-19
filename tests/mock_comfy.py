@@ -214,9 +214,13 @@ class H(BaseHTTPRequestHandler):
             self._send(200, _object_info())
         elif p == "/system_stats":
             # argv is how a client tells which ComfyUI is on the port.
-            root = os.environ.get("MOCK_COMFY_ROOT", "/opt/ComfyUI")
-            self._send(200, {"system": {"comfyui_version": "0.35.0",
-                                        "argv": [f"{root}/main.py"]}})
+            # MOCK_NO_ARGV plays an engine that will not say — ComfyUI Desktop
+            # and other wrappers launch in ways that name no main.py.
+            system = {"comfyui_version": "0.35.0"}
+            if not os.environ.get("MOCK_NO_ARGV"):
+                root = os.environ.get("MOCK_COMFY_ROOT", "/opt/ComfyUI")
+                system["argv"] = [f"{root}/main.py"]
+            self._send(200, {"system": system})
         elif p.startswith("/history/"):
             pid = p.rsplit("/", 1)[-1]
             with LOCK:

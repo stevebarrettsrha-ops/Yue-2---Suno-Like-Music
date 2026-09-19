@@ -1498,10 +1498,15 @@ async function startEngine() {
     // there is how this button came to look broken: pressed, claims to work,
     // changes nothing, and never mentions that something else holds the port.
     if (r && r.already) {
-      toast("Something is already answering on that address, so nothing was " +
-            "started. If songs cannot find the model, it is not this ComfyUI — " +
-            "check the Engine page.", true);
+      toast("The engine is already running on that address.");
       return;
+    }
+    if (r && r.moved) {
+      // The port was held by an engine that is not ours; the server moved to
+      // a free one and is starting the managed install there. Fall through to
+      // the same wait — the polling below follows the new address.
+      toast("That address is held by a different ComfyUI, so YuE Studio moved " +
+            "to " + r.comfy_url + " and is starting its own there.");
     }
     // There is no honest percentage for a model load, so show the real thing
     // instead: elapsed time on the button and ComfyUI's own console below.
