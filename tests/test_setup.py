@@ -189,6 +189,28 @@ def run(slow: bool = False) -> Suite:
                 {d["id"]: d for d in
                  manager.dependencies(cfg)}["engine"]["state"] == "missing")
 
+    # A green engine row must say which install answered, or say that it could
+    # not tell — "ok" alone reads as "verified", and an unverifiable engine
+    # squatting the port looked exactly like a healthy one.
+    from unittest.mock import patch
+    cfg_live = {**bootstrap.DEFAULT_CONFIG, "comfy_dir": "/opt/ComfyUI",
+                "models_dir": "/opt/ComfyUI/models"}
+    with patch.object(manager.bootstrap, "comfy_online", lambda url: True):
+        def engine_row(root):
+            return {d["id"]: d for d in
+                    manager.dependencies(cfg_live, ["x.safetensors"],
+                                         root)}["engine"]
+        row = engine_row("/opt/ComfyUI")
+        s.check("a verified engine names its install",
+                row["state"] == "ok" and "/opt/ComfyUI" in row["detail"])
+        row = engine_row("")
+        s.check("an engine with no argv admits it is unverified",
+                row["state"] == "ok" and "does not say" in row["detail"],
+                row["detail"][:80])
+        row = engine_row("/opt/OtherComfy")
+        s.check("a foreign engine is still called out",
+                row["state"] == "warn" and "/opt/OtherComfy" in row["detail"])
+
     # -- deleting a model file ---------------------------------------------
     with Workspace() as root:
         models = root / "models"

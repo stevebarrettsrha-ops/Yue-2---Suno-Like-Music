@@ -363,12 +363,22 @@ def dependencies(cfg: dict, listed: list[str] | None = None,
                                 "ComfyUI, or point YuE Studio at its models "
                                 "folder in Settings.",
                       "action": None})
+    elif online:
+        # Say which install answered even when nothing is wrong. When the
+        # engine will not say (it reports no argv, or none of it names a
+        # main.py), say that too — "ok" alone reads as "verified", and an
+        # unverifiable engine squatting the port looked exactly like this.
+        if engine_root:
+            where = " — the ComfyUI in " + engine_root
+        else:
+            where = (" — this engine does not say where it runs from, so it "
+                     "cannot be confirmed as the one in "
+                     + cfg.get("comfy_dir", "") if cfg.get("comfy_dir") else "")
+        items.append({"id": "engine", "label": "Engine", "state": "ok",
+                      "detail": cfg["comfy_url"] + where, "action": None})
     else:
-        items.append({"id": "engine", "label": "Engine",
-                      "state": "ok" if online else "missing",
-                      "detail": (cfg["comfy_url"] if online
-                                 else "ComfyUI is not answering."),
-                      "action": None if online else "start"})
+        items.append({"id": "engine", "label": "Engine", "state": "missing",
+                      "detail": "ComfyUI is not answering.", "action": "start"})
 
     for it in items:
         it["os"] = sysname
