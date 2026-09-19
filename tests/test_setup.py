@@ -109,6 +109,54 @@ def run(slow: bool = False) -> Suite:
                 deps["torch"]["action"] == "install"
                 and deps["comfy_reqs"]["action"] == "install")
 
+    # -- two sources of truth that can disagree ----------------------------
+    # The model row stats a folder; the song is built from what the engine
+    # lists. When those disagree the page used to say "All files present" and
+    # the song failed saying there was no model — which reads as a broken
+    # download, and sends people to re-fetch four gigabytes they already have.
+    with Workspace() as root:
+        models = root / "models"
+        for folder in ("checkpoints", "audio_encoders"):
+            (models / folder).mkdir(parents=True)
+        for rel, _u, _s, _r in bootstrap.MODELS:
+            (models / rel).write_bytes(b"0" * 10)
+        cfg = {**bootstrap.DEFAULT_CONFIG, "models_dir": str(models),
+               "comfy_url": "http://127.0.0.1:1"}
+
+        def models_row(listed):
+            return {d["id"]: d for d in
+                    manager.dependencies(cfg, listed)}["models"]
+
+        s.check("files on disk and the engine lists them — all present",
+                models_row(["yue2_3b_int8_convrot.safetensors"])["state"] == "ok")
+        row = models_row([])
+        s.check("files on disk but the engine lists none — says so",
+                row["state"] == "warn" and "different folder" in row["detail"],
+                f"{row['state']}: {row['detail'][:80]}")
+        s.check("engine unreachable — does not accuse it of anything",
+                models_row(None)["state"] == "ok")
+
+    # -- the port answered by a ComfyUI we are not managing ------------------
+    s.check("the same folder is the same install",
+            manager.same_install("/opt/ComfyUI", "/opt/ComfyUI"))
+    s.check("a trailing separator is still the same install",
+            manager.same_install("/opt/ComfyUI/", "/opt/ComfyUI"))
+    s.check("a different folder is a different install",
+            not manager.same_install("/opt/ComfyUI", "/opt/OtherComfy"))
+    for a, b, why in [("", "/opt/ComfyUI", "nothing is being managed yet"),
+                      ("/opt/ComfyUI", "", "the engine does not report argv")]:
+        s.check(f"no complaint when {why}", manager.same_install(a, b))
+
+    with Workspace() as root:
+        comfy_dir = root / "ComfyUI"
+        (comfy_dir / "models").mkdir(parents=True)
+        cfg = {**bootstrap.DEFAULT_CONFIG, "comfy_dir": str(comfy_dir),
+               "models_dir": str(comfy_dir / "models"),
+               "comfy_url": "http://127.0.0.1:1"}
+        s.check("an offline engine is reported missing, not foreign",
+                {d["id"]: d for d in
+                 manager.dependencies(cfg)}["engine"]["state"] == "missing")
+
     # -- deleting a model file ---------------------------------------------
     with Workspace() as root:
         models = root / "models"

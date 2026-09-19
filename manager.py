@@ -217,7 +217,23 @@ def _probe_torch(python: str) -> dict:
 # --------------------------------------------------------------------------- #
 # dependency report
 # --------------------------------------------------------------------------- #
-def dependencies(cfg: dict) -> list[dict]:
+def same_install(comfy_dir: str, engine_root: str) -> bool:
+    """Is the ComfyUI answering the address the one we are managing?"""
+    if not comfy_dir or not engine_root:
+        return True                      # nothing to compare: do not cry wolf
+    try:
+        return (Path(comfy_dir).resolve() == Path(engine_root).resolve()
+                or os.path.normcase(os.path.normpath(comfy_dir))
+                == os.path.normcase(os.path.normpath(engine_root)))
+    except OSError:
+        return True
+
+
+def dependencies(cfg: dict, listed: list[str] | None = None,
+                 engine_root: str = "") -> list[dict]:
+    """What the machine has. `listed` is the checkpoints ComfyUI itself reports,
+    or None when it could not be asked — it is the only way this report can tell
+    "the file is missing" apart from "the engine cannot see the file"."""
     items: list[dict] = []
     sysname = platform.system()
 
@@ -312,6 +328,21 @@ def dependencies(cfg: dict) -> list[dict]:
             items.append({"id": "models", "label": "Model files", "state": "warn",
                           "detail": "Optional files missing: " + ", ".join(missing),
                           "action": "models"})
+        elif listed == []:
+            # On disk, but the engine is not offering them. Two sources of
+            # truth, and they disagree: this row stats models_dir while the
+            # song is built from whatever ComfyUI lists. That happens when
+            # models_dir is not the folder this ComfyUI reads, or when the
+            # address is answered by a different ComfyUI than the one being
+            # managed. Saying "all present" here is how that ends up looking
+            # like a broken download.
+            items.append({"id": "models", "label": "Model files", "state": "warn",
+                          "detail": "The files are in " + str(models_dir)
+                                    + ", but ComfyUI lists no checkpoints. It is "
+                                      "reading a different folder — check that "
+                                      "the models folder belongs to the ComfyUI "
+                                      "at this address.",
+                          "action": "models"})
         else:
             items.append({"id": "models", "label": "Model files", "state": "ok",
                           "detail": "All files present.", "action": "models"})
@@ -321,11 +352,24 @@ def dependencies(cfg: dict) -> list[dict]:
 
     # Engine
     online = bootstrap.comfy_online(cfg["comfy_url"])
-    items.append({"id": "engine", "label": "Engine",
-                  "state": "ok" if online else "missing",
-                  "detail": (cfg["comfy_url"] if online
-                             else "ComfyUI is not answering."),
-                  "action": None if online else "start"})
+    if online and not same_install(cfg.get("comfy_dir", ""), engine_root):
+        # Another ComfyUI got to the port first. Nothing here starts the right
+        # one, because something already answers — so Start the engine reports
+        # success and changes nothing, and every song is built from a ComfyUI
+        # whose model folder we never wrote to.
+        items.append({"id": "engine", "label": "Engine", "state": "warn",
+                      "detail": cfg["comfy_url"] + " is answered by the ComfyUI "
+                                "in " + engine_root + ", not the one in "
+                                + cfg.get("comfy_dir", "") + ". Close that "
+                                "ComfyUI, or point YuE Studio at its models "
+                                "folder in Settings.",
+                      "action": None})
+    else:
+        items.append({"id": "engine", "label": "Engine",
+                      "state": "ok" if online else "missing",
+                      "detail": (cfg["comfy_url"] if online
+                                 else "ComfyUI is not answering."),
+                      "action": None if online else "start"})
 
     for it in items:
         it["os"] = sysname

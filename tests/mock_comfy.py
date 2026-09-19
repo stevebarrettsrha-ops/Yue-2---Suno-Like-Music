@@ -213,7 +213,10 @@ class H(BaseHTTPRequestHandler):
         if p == "/object_info":
             self._send(200, _object_info())
         elif p == "/system_stats":
-            self._send(200, {"system": {"comfyui_version": "0.35.0"}})
+            # argv is how a client tells which ComfyUI is on the port.
+            root = os.environ.get("MOCK_COMFY_ROOT", "/opt/ComfyUI")
+            self._send(200, {"system": {"comfyui_version": "0.35.0",
+                                        "argv": [f"{root}/main.py"]}})
         elif p.startswith("/history/"):
             pid = p.rsplit("/", 1)[-1]
             with LOCK:
