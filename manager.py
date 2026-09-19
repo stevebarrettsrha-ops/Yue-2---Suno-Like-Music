@@ -187,9 +187,27 @@ def comfy_python(cfg: dict) -> str:
     return ""
 
 
-def _probe_torch(python: str) -> dict:
+# Importing torch in a subprocess costs whole seconds, and the Engine page
+# used to pay that on every visit — which read as the app lagging. The answer
+# barely changes, so keep it for a while; Recheck asks with fresh=True, and a
+# PyTorch install drops the entry outright.
+_TORCH_PROBE: dict[str, tuple[float, dict]] = {}
+_TORCH_PROBE_TTL = 600.0
+
+
+def _probe_torch(python: str, fresh: bool = False) -> dict:
     if not python or not Path(python).exists():
         return {"state": "unknown", "detail": "No Python environment known yet."}
+    if not fresh:
+        held = _TORCH_PROBE.get(python)
+        if held and time.time() - held[0] < _TORCH_PROBE_TTL:
+            return held[1]
+    result = _probe_torch_now(python)
+    _TORCH_PROBE[python] = (time.time(), result)
+    return result
+
+
+def _probe_torch_now(python: str) -> dict:
     code = ("import torch,json;"
             "print(json.dumps({'v':torch.__version__,"
             "'cuda':torch.cuda.is_available(),"
@@ -229,7 +247,7 @@ def same_install(comfy_dir: str, engine_root: str) -> bool:
 
 
 def dependencies(cfg: dict, listed: list[str] | None = None,
-                 engine_root: str = "") -> list[dict]:
+                 engine_root: str = "", fresh: bool = False) -> list[dict]:
     """What the machine has. `listed` is the checkpoints ComfyUI itself reports,
     or None when it could not be asked — it is the only way this report can tell
     "the file is missing" apart from "the engine cannot see the file"."""
@@ -271,7 +289,7 @@ def dependencies(cfg: dict, listed: list[str] | None = None,
     # the Install button off.
     py = comfy_python(cfg)
     ours = bool(cfg.get("managed", True))
-    torch = _probe_torch(py)
+    torch = _probe_torch(py, fresh)
     torch_detail = torch["detail"]
     torch_action = "install" if torch["state"] != "ok" else "reinstall"
     if not ours:
@@ -592,7 +610,8 @@ def _install_torch(task: Task, cfg: dict, opts: dict) -> None:
                                "Successfully", "ERROR")) != 0:
         raise RuntimeError("PyTorch install failed. Try a different wheel index "
                            "on this page.")
-    task.set(detail=_probe_torch(str(vpy))["detail"])
+    _TORCH_PROBE.pop(str(vpy), None)      # a reinstall makes the answer stale
+    task.set(detail=_probe_torch(str(vpy), fresh=True)["detail"])
 
 
 def _install_reqs(task: Task, cfg: dict) -> None:

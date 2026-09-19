@@ -767,6 +767,18 @@ def settings_from(body: dict, keys: tuple[str, ...]) -> dict:
     return change
 
 
+@app.get("/api/config")
+def api_config_get():
+    """The saved settings, and nothing else — no probes, answers in
+    milliseconds. The Settings dialog fills itself from this on open; it used
+    to be filled by a status call that can take seconds, and a Save pressed
+    before that returned wrote the checkboxes' blank defaults over real
+    settings. That is how "start ComfyUI with YuE Studio" got switched off by
+    someone changing the address."""
+    return jsonify({"config": {k: cfg.get(k)
+                               for k in (TEXT_SETTINGS + FLAG_SETTINGS)}})
+
+
 @app.post("/api/config")
 def api_config():
     body = request.get_json(silent=True) or {}
@@ -923,7 +935,9 @@ def api_deps():
     online = comfy_online(cfg["comfy_url"])
     listed = client.checkpoints() if online else None
     engine_root = client.engine_root() if online else ""
-    return jsonify({"items": manager.dependencies(cfg, listed, engine_root),
+    fresh = request.args.get("fresh") == "1"
+    return jsonify({"items": manager.dependencies(cfg, listed, engine_root,
+                                                  fresh),
                     "os": __import__("platform").system(),
                     "torch_index": cfg.get("torch_index", "")})
 

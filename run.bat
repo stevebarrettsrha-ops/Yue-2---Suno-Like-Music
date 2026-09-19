@@ -72,8 +72,15 @@ if errorlevel 1 goto novenv
 :hasvenv
 ".venv\Scripts\python.exe" -c "import sys" >nul 2>nul
 if errorlevel 1 goto novenv
+rem pip took seconds on every launch just to conclude nothing changed. Keep a
+rem copy of the requirements it last satisfied and only run it on a mismatch.
+fc /b requirements.txt ".venv\requirements.stamp" >nul 2>nul
+if not errorlevel 1 goto runserver
 ".venv\Scripts\python.exe" -m pip install --disable-pip-version-check --quiet -r requirements.txt
 if errorlevel 1 goto pipfail
+copy /y requirements.txt ".venv\requirements.stamp" >nul
+
+:runserver
 ".venv\Scripts\python.exe" server.py
 pause
 exit /b 0
