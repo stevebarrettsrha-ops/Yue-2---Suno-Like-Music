@@ -163,14 +163,24 @@ def run(slow: bool = False) -> Suite:
         with studio(blind.url, ws / "data", models_dir=str(models)) as app:
             st = status(app.url)
             s.check("weights on disk and none in the engine's list is stale",
-                    st.get("stale_models") is True and st["comfy_online"],
+                    st.get("stale_models") is True and st["comfy_online"]
+                    and st["ready"] is False,
                     str(st.get("checkpoints")))
+            made = requests.post(f"{app.url}/api/generate",
+                                 json={"style": "readiness probe"},
+                                 timeout=30)
+            s.check("Create refuses a stale engine before making a job",
+                    made.status_code == 409
+                    and "checkpoint" in made.json().get("error", "").lower()
+                    and requests.get(f"{app.url}/api/jobs", timeout=10).json()
+                    == [], str(made.json())[:100])
     with comfy(delay=1) as seeing, Workspace() as ws:
         models = ws / "models"
         fake_weights(models)
         with studio(seeing.url, ws / "data", models_dir=str(models)) as app:
             s.check("an engine that lists them is not stale",
-                    status(app.url).get("stale_models") is False)
+                    status(app.url).get("stale_models") is False
+                    and status(app.url)["ready"] is True)
     with comfy(delay=1, MOCK_BLANK_CKPT_CALLS="9999") as blind, \
             Workspace() as ws:
         empty = ws / "models"
