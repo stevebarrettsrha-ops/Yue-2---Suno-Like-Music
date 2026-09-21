@@ -384,8 +384,9 @@ def run(slow: bool = False) -> Suite:
             (models / "audio_encoders").mkdir(parents=True)
             sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
             import bootstrap
-            for rel, *_ in bootstrap.MODELS:
-                (models / rel).write_bytes(b"0")
+            for rel, _url, size, _required in bootstrap.MODELS:
+                with (models / rel).open("wb") as handle:
+                    handle.truncate(size)
             with studio(engine.url, data, setup_complete=False,
                         models_dir=str(models)) as app:
                 page = browser.new_page(viewport={"width": 1440, "height": 900})

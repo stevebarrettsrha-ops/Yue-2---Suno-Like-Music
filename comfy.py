@@ -209,6 +209,17 @@ class ComfyClient:
         except (TypeError, ValueError):
             return 900
 
+    def duration_default(self) -> int:
+        """The engine author's tested default, distinct from its hard limit."""
+        try:
+            spec = self.node_inputs("YuE2GenerateMusic").get("max_duration")
+            opts = (spec[1] if isinstance(spec, (list, tuple)) and len(spec) > 1
+                    and isinstance(spec[1], dict) else {})
+            value = int(float(opts.get("default") or 0))
+            return max(1, min(value, self.duration_limit())) if value else 180
+        except (ComfyError, TypeError, ValueError):
+            return 180
+
     def pick_option(self, spec, *preferred: str) -> str | None:
         """The first preferred choice this schema actually offers.
 

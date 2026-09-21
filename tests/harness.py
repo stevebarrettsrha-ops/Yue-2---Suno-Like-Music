@@ -19,6 +19,8 @@ from pathlib import Path
 
 import requests
 
+import bootstrap
+
 ROOT = Path(__file__).resolve().parent.parent
 MOCK = Path(__file__).resolve().parent / "mock_comfy.py"
 # The suite talks to servers on this machine; a proxy in the environment would
@@ -133,11 +135,12 @@ def comfy(delay: float = 2.0, **env) -> Server:
 
 def fake_weights(models_dir: Path) -> None:
     """Drop the model files where missing_models() looks for them."""
-    for folder, name in (("checkpoints", "yue2_3b_int8_convrot.safetensors"),
-                         ("audio_encoders", "sheetsage2_bf16.safetensors")):
-        path = models_dir / folder / name
+    for rel, _url, size, _required in bootstrap.MODELS:
+        path = models_dir / rel
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_bytes(b"\x00" * 16)
+        # Sparse: reports the realistic size without consuming gigabytes.
+        with path.open("wb") as handle:
+            handle.truncate(size)
 
 
 def fake_install(root: Path, stale_first_boot: bool = False) -> Path:
