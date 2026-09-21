@@ -6,7 +6,7 @@ python tests/run.py graph api      # only those
 python tests/run.py --list         # what there is
 ```
 
-Nothing extra is needed for the first seven groups — they use what YuE Studio
+Nothing extra is needed for the first eight groups — they use what YuE Studio
 already depends on. The browser tests want Playwright, and say so and step
 aside when it is missing:
 
@@ -24,6 +24,7 @@ python -m playwright install chromium
 | `library` | The song list under concurrent writes, damaged `library.json`, track filenames, how long a song really is, and which finished jobs stay visible. |
 | `setup` | Addresses people type, finding the interpreter an existing ComfyUI runs on, deleting a model file, resumable downloads, and every answer HuggingFace can give. |
 | `api` | The HTTP surface end to end: a song of every kind, playing and seeking, renaming and deleting, stopping the right song, and ComfyUI going away mid-render. |
+| `engine` | The engine process itself: the console endpoint, all four restart routes, taking a port back from an orphan, refusing to kill what is not ComfyUI, naming a supervisor that puts it straight back, the stale model scan, and what a launch does to an engine that is already up. |
 | `hardening` | Fields of the wrong type, paths that try to climb out, requests addressed elsewhere, and config or library files damaged behind the app's back. |
 | `load` | 300 requests at once, 48 songs queued together with deletes landing on top, then what the process looks like afterwards. |
 | `ui` | The interface in a real browser — making, playing, sorting, stopping and setting up. Any uncaught script error fails the run. |
@@ -69,6 +70,16 @@ with no models installed.
 It is a stand-in, not the real thing: it never loads a model. Inference,
 VRAM behaviour and multi-minute renders are the one thing this suite cannot
 tell you about.
+
+The `engine` group needs real processes rather than a stand-in, because what
+it tests is whether the app finds, names and stops the right one.
+`harness.fake_install()` builds a pretend ComfyUI checkout whose `main.py`
+serves the mock and reports the folder in its `/system_stats` argv, so the app
+can own, stop and restart it for real; `supervised_comfy()` wraps that mock in
+a parent that puts it back whenever it dies, the way ComfyUI Desktop and
+launcher scripts do; and `port_squatter()` answers `/system_stats` from a
+process whose command line says nothing about python or ComfyUI, which is what
+a forwarded port looks like and what must never be killed.
 
 ## Adding a test
 

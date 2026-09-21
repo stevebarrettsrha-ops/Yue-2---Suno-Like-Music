@@ -287,6 +287,18 @@ def run(slow: bool = False) -> Suite:
             page.wait_for_selector("#depList .fitem", timeout=15000)
             s.check("the engine page lists what the machine needs",
                     page.locator("#depList .fitem").count() >= 6)
+            # The engine console only polls while this page is open, so
+            # opening the page is what has to make the state line real.
+            page.wait_for_function(
+                "() => !/Checking/.test("
+                "document.querySelector('#engineState').textContent)",
+                timeout=15000)
+            s.check("the engine console names an engine started outside the "
+                    "app, and offers to take it over",
+                    "started outside YuE Studio"
+                    in page.locator("#engineState").inner_text()
+                    and page.locator("#btnRestartEngine").is_visible(),
+                    page.locator("#engineState").inner_text()[:80])
             page.click('.nav[data-view="models"]')
             page.wait_for_selector("#curatedList .fitem", timeout=15000)
             s.check("the models page offers the model files",

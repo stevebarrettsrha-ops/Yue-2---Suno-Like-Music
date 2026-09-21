@@ -29,6 +29,7 @@ MODULES = [
     ("library", "the song list, job reporting and track lengths"),
     ("setup", "finding Python, addresses, models and downloads"),
     ("api", "the HTTP surface, end to end"),
+    ("engine", "taking the port back, restarting, and the boot engine"),
     ("hardening", "hostile input and damaged state"),
     ("load", "many things at once, and what is left behind"),
     ("ui", "the interface itself, in a browser"),

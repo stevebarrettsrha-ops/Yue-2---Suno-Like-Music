@@ -41,6 +41,35 @@ starts.
 If PyTorch will not install or your GPU is being ignored, pick a different build
 (CUDA 12.8 / 12.4 / 12.1, ROCm, CPU) on the same page and reinstall.
 
+### The engine console, and Restart
+
+The **Engine console** on that page is ComfyUI's own output, live, with YuE
+Studio's own actions — taking a port back, stopping a process, adopting an
+engine that was already up — written into the same stream, in the order they
+happened. One line above it says where things stand: starting, running, online
+but started elsewhere, or one of the two states that used to be invisible:
+
+- *the model files are on disk but this ComfyUI started before they landed* —
+  ComfyUI reads its model folders once, at startup, so a checkpoint downloaded
+  afterwards is there and unseen. It reads as a failed download, and sends
+  people to re-fetch four gigabytes they already have.
+- *a different ComfyUI is answering at this address* — which looks exactly the
+  same from the song that failed.
+
+**Restart the engine** cures both, and it works on an engine YuE Studio did not
+start: ComfyUI-Manager's own reboot first, and failing that the process holding
+the port is identified and stopped, then YuE Studio's own engine takes its
+place. Anything on the port that does not look like ComfyUI is named back to
+you and left alone — a wrong address in Settings is not a licence to close
+whatever is at it. When it cannot be done, the reason given is the real one:
+access denied, or something supervising the engine and putting it straight back
+under a new process id.
+
+You rarely need the button. A launch already ends with a working engine:
+nothing running gets one started, a healthy one already up is adopted and said
+so, and one that started before the model files landed is replaced. A ComfyUI
+you run yourself (the external-mode setup) is only ever told what is wrong.
+
 ### The Models page
 
 All HuggingFace work happens here:
@@ -96,6 +125,13 @@ provably is not, it moves itself to the next free port, starts the right
 ComfyUI there, and keeps the new address. An engine verified as its own is
 never abandoned, and an address you set to a remote machine or an external
 setup is never second-guessed.
+
+Moving aside is the gentle cure, and it is the one used whenever the port is
+held by an install that is somebody else's: their ComfyUI keeps running. The
+other cure is **Restart the engine**, which closes what is on the port and puts
+YuE Studio's own engine there. That is the right one when the engine at the
+address *is* the managed install and has simply gone stale — moving aside there
+would leave the old one holding the graphics card and fix nothing.
 
 ### Model files
 
@@ -245,8 +281,13 @@ Lower Max length, keep Tiled decode on, and use the int8 checkpoint rather than
 bf16.
 
 **Generation never finishes**
-The first run of any model loads slowly. Check the ComfyUI console output shown
-at the bottom of the setup panel, and the ComfyUI window itself.
+The first run of any model loads slowly. Check the Engine console on the Engine
+page — that is ComfyUI's own output, live.
+
+**Every song fails with "no checkpoints" and the files are on disk**
+ComfyUI scans its model folders once, at startup, so anything downloaded after
+it started is invisible to it. The Engine console says so in as many words when
+it happens; press **Restart the engine**. Re-downloading will not help.
 
 **Cover songs come out as gibberish**
 A cover is only as good as its transcription, so look at the score first:

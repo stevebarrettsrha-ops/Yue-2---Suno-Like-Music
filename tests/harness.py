@@ -13,6 +13,7 @@ import socket
 import subprocess
 import sys
 import tempfile
+import textwrap
 import time
 from pathlib import Path
 
@@ -128,6 +129,108 @@ def comfy(delay: float = 2.0, **env) -> Server:
     port = free_port()
     return Server([sys.executable, str(MOCK), str(port)], port, "/system_stats",
                   env={"MOCK_DELAY": str(delay), **env})
+
+
+def fake_weights(models_dir: Path) -> None:
+    """Drop the model files where missing_models() looks for them."""
+    for folder, name in (("checkpoints", "yue2_3b_int8_convrot.safetensors"),
+                         ("audio_encoders", "sheetsage2_bf16.safetensors")):
+        path = models_dir / folder / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"\x00" * 16)
+
+
+def fake_install(root: Path, stale_first_boot: bool = False) -> Path:
+    """A pretend ComfyUI checkout whose main.py serves the stand-in engine.
+
+    This is what lets the app really own, stop and restart an engine process
+    in a test: the takeover and boot paths run against a live child, not a
+    mock of one. Its /system_stats names this folder, as a real ComfyUI's
+    argv does, so the app can tell it apart from someone else's install.
+
+    With stale_first_boot the FIRST launch serves an empty checkpoint list —
+    an engine that started before the weights landed — and every later launch
+    serves the full one, which is exactly what ComfyUI's once-at-startup model
+    scan looks like from outside.
+    """
+    install = root / "ComfyUI"
+    install.mkdir(parents=True, exist_ok=True)
+    (install / "main.py").write_text(textwrap.dedent(f"""\
+        import os, pathlib, runpy, sys
+        here = pathlib.Path(__file__).resolve().parent
+        port = sys.argv[sys.argv.index("--port") + 1]
+        # A real ComfyUI's argv names the main.py it was launched from; the
+        # stand-in reads this to answer /system_stats the same way.
+        os.environ["MOCK_COMFY_ROOT"] = str(here)
+        flag = here / "stale.flag"
+        if flag.exists():
+            os.environ["MOCK_BLANK_CKPT_CALLS"] = "999999"
+            flag.unlink()
+            print("model scan found no checkpoints", flush=True)
+        else:
+            print("model scan found the YuE2 checkpoints", flush=True)
+        print("Starting server", flush=True)
+        sys.argv = ["mock_comfy.py", port]
+        runpy.run_path({str(MOCK)!r}, run_name="__main__")
+    """))
+    if stale_first_boot:
+        (install / "stale.flag").write_text("first boot is a stale scan")
+    fake_weights(install / "models")
+    return install
+
+
+def supervised_comfy(delay: float = 1.0) -> Server:
+    """A stand-in engine under a parent that restarts it whenever it dies.
+
+    ComfyUI Desktop and every launcher script behave like this, and it is the
+    case a plain "stop the process" quietly loses to: the port is free for
+    half a second and then taken again under a new pid.
+    """
+    port = free_port()
+    script = Path(tempfile.mkstemp(suffix="_keeper.py")[1])
+    script.write_text(textwrap.dedent(f"""\
+        import subprocess, sys, time
+        while True:
+            child = subprocess.Popen([sys.executable, {str(MOCK)!r}, sys.argv[1]])
+            child.wait()
+            time.sleep(0.3)
+    """))
+    return Server([sys.executable, str(script), str(port)], port,
+                  "/system_stats", env={"MOCK_DELAY": str(delay)})
+
+
+def port_squatter() -> Server:
+    """Something that answers /system_stats but is not ComfyUI at all.
+
+    A forwarded port — docker-proxy, an ssh tunnel, a reverse proxy — looks
+    exactly like this: the engine check passes and the process holding the
+    socket is nothing of the sort. It must never be stopped, so it is run
+    through a link whose name says nothing about python or ComfyUI, the way
+    the real ones do.
+    """
+    port = free_port()
+    home = Path(tempfile.mkdtemp(prefix="port-squatter-"))
+    (home / "serve.script").write_text(textwrap.dedent("""\
+        import sys
+        from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+        class Handler(BaseHTTPRequestHandler):
+            protocol_version = "HTTP/1.1"
+            def _reply(self, code):
+                self.send_response(code)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", "2")
+                self.end_headers()
+                self.wfile.write(b"{}")
+            def do_GET(self): self._reply(200)
+            def do_POST(self): self._reply(404)
+            def log_message(self, *a): pass
+        ThreadingHTTPServer(("127.0.0.1", int(sys.argv[1])),
+                            Handler).serve_forever()
+    """))
+    link = home / "webthing"
+    os.symlink(sys.executable, link)
+    return Server([str(link), str(home / "serve.script"), str(port)], port,
+                  "/system_stats")
 
 
 def studio(comfy_url: str, data: Path, **config) -> Server:
