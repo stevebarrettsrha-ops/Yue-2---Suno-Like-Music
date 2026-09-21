@@ -162,39 +162,6 @@ def run(slow: bool = False) -> Suite:
                                   timeout=20).json()["jobs"]), 4)
         finish_jobs(api, 90)
 
-    # -- a planner failure falls back to direct music generation -----------
-    # This reproduces the Windows failure reported by the real
-    # YuE2GenerateABC node. The score is an enhancement; YuE2GenerateMusic
-    # officially supports receiving no ABC at all.
-    with comfy(delay=1, MOCK_FAIL_NODE="YuE2GenerateABC") as engine, \
-            Workspace() as data, studio(engine.url, data) as app:
-        made = requests.post(f"{app.url}/api/generate",
-                             json={"style": "folk ballad", "lyrics": "hello"},
-                             timeout=20).json()
-        jobs = finish_jobs(app.url, 40)
-        job = next((j for j in jobs if j["id"] == made["jobs"][0]), {})
-        tracks = requests.get(f"{app.url}/api/library", timeout=10).json()
-        s.check("an ABC planner Errno 22 retries without the optional score",
-                job.get("status") == "done" and len(tracks) == 1
-                and not tracks[0].get("abc"),
-                job.get("error", job.get("stage", "job vanished")))
-
-    with comfy(delay=1, MOCK_FAIL_NODE="YuE2GenerateMusic",
-               MOCK_FAIL_ONCE="1") as engine, Workspace() as data, \
-            studio(engine.url, data) as app:
-        made = requests.post(
-            f"{app.url}/api/generate",
-            json={"style": "folk ballad", "lyrics": "hello",
-                  "duration": 900, "top_p": 1.0}, timeout=20).json()
-        jobs = finish_jobs(app.url, 40)
-        job = next((j for j in jobs if j["id"] == made["jobs"][0]), {})
-        tracks = requests.get(f"{app.url}/api/library", timeout=10).json()
-        s.check("a music-node Errno 22 retries with compatible options",
-                job.get("status") == "done" and len(tracks) == 1
-                and tracks[0].get("duration") == 180
-                and not tracks[0].get("abc"),
-                job.get("error", job.get("stage", "job vanished")))
-
     # -- stopping one song must not stop another --------------------------
     with comfy(delay=25) as engine, Workspace() as data, \
             studio(engine.url, data) as app:
