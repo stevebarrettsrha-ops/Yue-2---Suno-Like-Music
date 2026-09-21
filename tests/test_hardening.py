@@ -124,6 +124,32 @@ def run(slow: bool = False) -> Suite:
               requests.post(f"{api}/api/generate", data={"style": "attack"},
                             timeout=10))
 
+        # JSON itself can be valid while still having the wrong top-level
+        # shape.  Every write route expects an object; arrays and scalars must
+        # be harmless rather than raising on their first `.get()` call.
+        for label, method, path in (
+                ("generate", requests.post, "/api/generate"),
+                ("settings", requests.post, "/api/config"),
+                ("rename", requests.patch, "/api/track/missing"),
+                ("dependency install", requests.post,
+                 "/api/deps/nonexistent/install"),
+                ("HF settings", requests.post, "/api/hf/settings"),
+                ("HF download", requests.post, "/api/hf/download"),
+                ("HF delete", requests.delete, "/api/hf/local")):
+            for value in ([], "text", 7, True):
+                _sane(s, f"{label} survives JSON {type(value).__name__}",
+                      method(f"{api}{path}", json=value, timeout=20))
+
+        # Strings that look boolean are a common hand-written API mistake.
+        # They must not silently invert generation or persistent settings.
+        requests.post(f"{api}/api/config", json={"auto_start_comfy": False},
+                      timeout=10)
+        requests.post(f"{api}/api/config", json={"auto_start_comfy": "false"},
+                      timeout=10)
+        s.check("a string cannot masquerade as a settings boolean",
+                requests.get(f"{api}/api/config", timeout=10).json()
+                ["config"]["auto_start_comfy"] is False)
+
         # -- only this machine ----------------------------------------------
         s.equal("a request addressed to somewhere else is refused",
                 requests.get(f"{api}/api/library",
