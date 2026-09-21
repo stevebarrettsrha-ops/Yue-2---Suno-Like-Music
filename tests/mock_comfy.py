@@ -149,12 +149,17 @@ def _execute(pid, graph):
                 break
     time.sleep(0)
     fail_after = float(__import__("os").environ.get("MOCK_FAIL_AFTER", "0"))
-    if fail_after:
+    fail_node = __import__("os").environ.get("MOCK_FAIL_NODE", "")
+    graph_has_fail_node = any(n.get("class_type") == fail_node
+                              for n in graph.values())
+    if fail_after or (fail_node and graph_has_fail_node):
         with LOCK:
             QUEUE_RUNNING.remove(pid)
             HISTORY[pid] = {"status": {"status_str": "error", "messages": [
-                ["execution_error", {"node_type": "KSampler",
-                                     "exception_message": "CUDA out of memory"}]]},
+                ["execution_error", {
+                    "node_type": fail_node or "KSampler",
+                    "exception_message": ("[Errno 22] Invalid argument"
+                                          if fail_node else "CUDA out of memory")}]]},
                             "outputs": {}}
         return
     with LOCK:

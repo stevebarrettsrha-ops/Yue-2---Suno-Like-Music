@@ -466,6 +466,7 @@ def run_job(job_id: str, params: dict, built: dict | None = None) -> None:
         started = time.time()
         last_stage = ""
         unreachable_since = 0.0
+        abc_fallback_used = False
         while True:
             time.sleep(1.5)
             # Read the flag under the lock and act outside it: jobs_lock is a
@@ -508,6 +509,32 @@ def run_job(job_id: str, params: dict, built: dict | None = None) -> None:
 
             err = client.failed(prompt_id, hist)
             if err:
+                # ABC planning is useful but not required to render a song.
+                # Some Windows/driver combinations fail inside the native
+                # YuE2GenerateABC node with OSError 22 even though schema
+                # validation and model loading both succeeded. Retry once
+                # through YuE2GenerateMusic's supported no-score path rather
+                # than throwing the entire song away.
+                can_skip_plan = (
+                    not abc_fallback_used
+                    and err.lower().startswith("yue2generateabc:")
+                    and ("errno 22" in err.lower()
+                         or "invalid argument" in err.lower())
+                    and params.get("use_abc", True)
+                    and not params.get("abc")
+                    and not params.get("reference_audio"))
+                if can_skip_plan:
+                    abc_fallback_used = True
+                    set_state(stage="Melody planner failed — rendering without "
+                                    "a score", pct=6, warning=err)
+                    fallback = {**params, "use_abc": False,
+                                "seed": built["seed"]}
+                    built = client.build_prompt(fallback)
+                    prompt_id = client.queue(built["prompt"])
+                    set_state(prompt_id=prompt_id)
+                    started = time.time()
+                    unreachable_since = 0.0
+                    continue
                 set_state(status="error", error=err, stage="Failed")
                 return
 
