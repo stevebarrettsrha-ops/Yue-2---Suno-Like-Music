@@ -40,6 +40,52 @@
    worker checks it between chunks.
 10. **Finished audio is copied into `data/tracks/`.** ComfyUI's output folder
     is not treated as storage.
+11. **Nothing that does not look like ComfyUI is ever killed.**
+    `take_over_port()` reads each holding pid's command line and refuses
+    anything without `python` / `main.py` / `comfy` in it, naming it back to
+    the person. A wrong address in Settings must not become a licence to close
+    whatever is at it.
+12. **`settled_free()` sleeps 2.0 s before calling a port free.** A supervisor
+    — ComfyUI Desktop, a launcher script — respawns in under a second, so
+    quiet is only free once it *stays* quiet. Report it free early and the
+    managed engine starts into a port that is taken again by the time it
+    binds; the three-attempt loop then reads the changed pid set and says
+    "something is supervising it" instead of failing without a reason.
+13. **Every (re)start calls `_refresh_schema_when_up()`.** `ComfyClient`
+    caches `/object_info` for two minutes, so without it the whole point of
+    the restart — a fresh model scan — hides behind the old cache and the
+    page goes on saying there are no checkpoints.
+14. **`kill_pid()` returns what the system said**, not a boolean: "stopped",
+    "already gone", "access denied", "sent SIGKILL". An access-denied *is*
+    the diagnosis, and swallowing it turns a one-line answer into an
+    unexplained failure. `_pid_gone()` treats a zombie as gone — it answers
+    `kill(pid, 0)` while holding no sockets, so counting it alive costs five
+    seconds and then reports a SIGKILL that stopped nothing.
+15. **`stale_models` keys off `checkpoints`, with the marker `"yue2"`.**
+    ComfyUI scans its model folders once, at startup; weights that land after
+    that are on disk and absent from its lists until a restart. The list that
+    decides it is the one `pick_checkpoint()` reads, because its emptiness is
+    what stops a song being made — not `audio_encoders`, which only Cover mode
+    needs. `"yue2"` is the substring both downloaded checkpoints carry
+    (`yue2_3b_int8_convrot`, `yue2_3b_bf16`). True only when nothing is
+    missing from disk *and* the engine's own list has none of them; a file
+    that is genuinely absent is a download problem and must not be reported
+    as a stale scan.
+16. **Two cures for a lost port, and they are not interchangeable.**
+    `relocate_engine()` moves YuE Studio to a free port and leaves the other
+    engine running — the right answer when the port is held by an install that
+    is provably somebody else's (`foreign_engine_reason()`). `take_over_port()`
+    closes what is there and puts ours in its place — the right answer for
+    **Restart the engine**, and at boot for an engine at our own address that
+    has gone stale, where moving aside would leave the old one holding the
+    card and fix nothing. `ensure_engine_at_boot()` tries relocation first.
+17. **A missing YuE2 node is never a reason to replace an engine.** Those
+    nodes are part of ComfyUI itself from v0.35.0, so a restart cannot conjure
+    them; treating their absence as a fault to fix would kill a working engine
+    once per launch and never fix anything. (The reference implementation this
+    was ported from *does* restart on that, because there the nodes come from
+    custom-node packs that only load at startup.) `engine_trouble()` lists
+    only what a restart actually cures.
 
 ## Validation gate — run after any edit
 
@@ -57,10 +103,16 @@ node --check /tmp/app.js
 A missing function declaration in the inline script kills all interactivity
 silently — `node --check` is not optional.
 
-`python tests/run.py` runs that gate and everything else (311 checks, about two
-minutes); `python tests/run.py gate` is just the block above. Run the whole
-suite before pushing. Tests take their own port and their own `YUE_STUDIO_DATA`
-directory, so they never touch a real library.
+`python tests/run.py` runs that gate and everything else (448 checks, about
+three minutes); `python tests/run.py gate` is just the block above. Run the
+whole suite before pushing. Tests take their own port and their own
+`YUE_STUDIO_DATA` directory, so they never touch a real library. Four of them
+need `ffmpeg` on PATH and fail without it — that is the machine, not the code.
+
+`python tests/run.py engine` is the group that owns real ComfyUI processes:
+takeover, restart, the stale scan and what a launch does to an engine that is
+already up. It kills processes it finds on the ports it chose, so do not point
+it at a real install.
 
 ## What the UI maps onto
 

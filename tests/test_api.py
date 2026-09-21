@@ -11,7 +11,8 @@ import requests
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from harness import Suite, Workspace, comfy, finish_jobs, studio, wait_for
+from harness import (Suite, Workspace, comfy, fake_install, finish_jobs,
+                     studio, wait_for)
 
 
 def run(slow: bool = False) -> Suite:
@@ -263,22 +264,8 @@ def run(slow: bool = False) -> Suite:
     # failed saying there was no model, and the person was told to change the
     # address by hand. The app does that move itself now — on the Start
     # button and on every launch — and keeps the new address.
-    import shutil as _sh, tempfile as _tmp
-    fake = Path(_tmp.mkdtemp(prefix="own-comfy-"))
-    (fake / "models" / "checkpoints").mkdir(parents=True)
-    (fake / "models" / "checkpoints" / "yue2_3b_int8_convrot.safetensors"
-     ).write_bytes(b"0")
-    (fake / "models" / "audio_encoders").mkdir(parents=True)
-    (fake / "models" / "audio_encoders" / "sheetsage2_bf16.safetensors"
-     ).write_bytes(b"0")
-    (fake / "tests").mkdir()
-    for name in ("mock_comfy.py", "object_info.json"):
-        _sh.copy(Path(__file__).resolve().parent / name, fake / "tests" / name)
-    (fake / "main.py").write_text(
-        "import sys, runpy\n"
-        "port = sys.argv[sys.argv.index('--port') + 1]\n"
-        "sys.argv = ['mock_comfy.py', port]\n"
-        "runpy.run_path('tests/mock_comfy.py', run_name='__main__')\n")
+    import tempfile as _tmp
+    fake = fake_install(Path(_tmp.mkdtemp(prefix="own-comfy-")))
 
     def wait_engine_moved(api, old_url):
         return wait_for(lambda: (lambda st: st["config"]["comfy_url"] != old_url

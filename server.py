@@ -611,6 +611,28 @@ def api_status():
             payload["max_duration"] = client.duration_limit()
         except Exception as exc:  # ComfyUI up but too old / still loading
             payload["schema_error"] = str(exc)
+        # The two silent "nothing works" states, named rather than left for
+        # the person to infer from an empty dropdown.
+        #
+        # ComfyUI scans its model folders once, at startup. A checkpoint that
+        # landed afterwards is on disk and absent from its list until it is
+        # restarted — which reads as a failed download and sends people to
+        # re-fetch four gigabytes they already have. checkpoints is the list
+        # that decides it: pick_checkpoint() reads that one, so its emptiness
+        # is exactly what stops a song being made. "yue2" is the marker both
+        # downloaded checkpoints carry (yue2_3b_int8_convrot, yue2_3b_bf16).
+        payload["stale_models"] = bool(
+            not missing and models_dir and models_dir.is_dir()
+            and "checkpoints" in payload
+            and not any("yue2" in c.lower() for c in payload["checkpoints"]))
+        # And the address can be answered by a different install than the one
+        # set up here, which looks exactly like a broken download.
+        stats = bootstrap.comfy_stats(cfg["comfy_url"]) or {}
+        payload["engine_argv"] = (stats.get("argv") or [""])[0]
+        root = client.engine_root()
+        payload["engine_mismatch"] = bool(
+            root and cfg.get("comfy_dir")
+            and not manager.same_install(cfg["comfy_dir"], root))
     return jsonify(payload)
 
 
@@ -643,6 +665,125 @@ def api_setup_state():
     snap = progress.snapshot(since)
     snap["comfy_tail"] = comfy_proc.tail(12)
     return jsonify(snap)
+
+
+def _note(msg: str) -> None:
+    """An engine action, said in both places it is looked for: the engine
+    console (next to ComfyUI's own output) and the setup log."""
+    comfy_proc.note(msg)
+    progress.log(msg)
+
+
+def _refresh_schema_when_up() -> None:
+    """After a (re)start, throw away the cached schema the moment the engine
+    answers.
+
+    ComfyClient caches /object_info for two minutes. Without this, the whole
+    point of the restart — a fresh model scan — stays hidden behind the old
+    cache, and the page goes on saying there are no checkpoints.
+    """
+    def wait():
+        if bootstrap.wait_for_comfy(cfg["comfy_url"], timeout=900):
+            try:
+                client.schema(force=True)
+            except Exception:
+                pass
+    threading.Thread(target=wait, daemon=True).start()
+
+
+def take_over_port(url: str, port: int):
+    """Close whatever ComfyUI answers on the port.
+
+    Returns ("manager-reboot", None) when ComfyUI-Manager rebooted it in
+    place, ("freed", None) when the port is now empty, or (None, advice) when
+    it cannot be done — with advice that names the actual obstacle. "Close it
+    yourself" is not advice when the thing to close is a python with no window
+    and no tray icon: it sends people hunting through Task Manager.
+
+    Nothing that does not look like ComfyUI is ever stopped: the port may be
+    configured wrong, and a wrong address is not a licence to kill whatever
+    is at it.
+    """
+    _note("This ComfyUI was not started here — taking it over.")
+    try:
+        r = requests.post(f"{url}/manager/reboot", json={}, timeout=5)
+        accepted = r.status_code in (200, 201, 204)
+    except requests.exceptions.RequestException:
+        accepted = True          # the connection dropping *is* the reboot
+    if accepted:
+        deadline = time.time() + 10
+        while time.time() < deadline:
+            if not comfy_online(url):
+                _note("ComfyUI-Manager took the reboot; waiting for the "
+                      "engine to come back.")
+                return "manager-reboot", None
+            time.sleep(0.5)
+        _note("ComfyUI-Manager did not take the reboot; stopping the "
+              "process instead.")
+
+    def settled_free() -> bool:
+        # A supervisor — ComfyUI Desktop, a launcher script — respawns in
+        # under a second, so quiet is only free once it *stays* quiet. Report
+        # a port free too early and the managed engine starts into a port that
+        # is taken again by the time it binds.
+        time.sleep(2.0)
+        return not comfy_online(url) and not bootstrap.port_pids(port)
+
+    first_pids: list[int] = []
+    denied = False
+    for attempt in range(3):
+        pids = bootstrap.port_pids(port)
+        if attempt == 0:
+            first_pids = pids
+        if not pids:
+            if not comfy_online(url) and settled_free():
+                return "freed", None
+            if not comfy_online(url):
+                _note("It came straight back — something restarted it.")
+                continue
+            return None, (f"Something answers on port {port} but its process "
+                          "could not be found — it may belong to another user "
+                          "account. Close it yourself, then press Start the "
+                          "engine.")
+        for pid in pids:
+            cmd = bootstrap.pid_cmdline(pid)
+            _note(f"Port {port} is held by pid {pid}"
+                  + (f": {cmd[:120]}" if cmd else " (command line unreadable)"))
+            if cmd and not any(k in cmd.lower()
+                               for k in ("python", "main.py", "comfy")):
+                return None, (f"Port {port} is held by something that does "
+                              f"not look like ComfyUI ({cmd[:90]}). Close it "
+                              "yourself, or point Settings at a different "
+                              "address.")
+        for pid in pids:
+            said = bootstrap.kill_pid(pid)
+            _note(f"Stopping pid {pid} — {said or 'no reply'}")
+            if "denied" in (said or "").lower():
+                denied = True
+        deadline = time.time() + 8
+        while comfy_online(url) and time.time() < deadline:
+            time.sleep(0.5)
+        if not comfy_online(url):
+            if settled_free():
+                return "freed", None
+            _note("It came straight back — something restarted it.")
+            continue
+        _note("Still answering — trying again.")
+
+    now = bootstrap.port_pids(port)
+    if denied:
+        return None, ("The system refused to stop it (access denied) — it was "
+                      "started by another user, or as an administrator. Run "
+                      "YuE Studio with the same rights once, or close that "
+                      "ComfyUI yourself, then press Start the engine.")
+    if now and set(now) != set(first_pids):
+        return None, ("It keeps coming back under a new process id — "
+                      "something is supervising it (ComfyUI Desktop, or a "
+                      "launcher script). Close that application, then press "
+                      "Start the engine.")
+    return None, ("It would not close. The Engine console shows what was "
+                  "tried; close that ComfyUI yourself, then press Start the "
+                  "engine.")
 
 
 def _free_local_port(after: int) -> int:
@@ -703,11 +844,18 @@ def relocate_engine(reason: str) -> str:
     cfg["comfy_url"] = f"http://127.0.0.1:{port}"
     client.url = cfg["comfy_url"]
     save_config(cfg)
-    progress.log(f"{old_url} is not usable — {reason}. Moving to port {port} "
-                 "and starting the managed ComfyUI there.")
+    _note(f"{old_url} is not usable — {reason}. Moving to port {port} "
+          "and starting the managed ComfyUI there.")
     comfy_proc.start(cfg["python"], Path(cfg["comfy_dir"]), port, progress,
                      Path(cfg["models_dir"]) if cfg.get("models_dir") else None)
+    _refresh_schema_when_up()
     return cfg["comfy_url"]
+
+
+def _start_managed(port: int) -> None:
+    comfy_proc.start(cfg["python"], Path(cfg["comfy_dir"]), port, progress,
+                     Path(cfg["models_dir"]) if cfg.get("models_dir") else None)
+    _refresh_schema_when_up()
 
 
 @app.post("/api/comfy/start")
@@ -733,11 +881,85 @@ def api_comfy_start():
                         "error": "Run setup first."}), 400
     port = comfy_port(cfg["comfy_url"])
     try:
-        comfy_proc.start(cfg["python"], Path(cfg["comfy_dir"]), port, progress,
-                     Path(cfg["models_dir"]) if cfg.get("models_dir") else None)
+        _note("Starting ComfyUI…")
+        _start_managed(port)
     except RuntimeError as exc:
         return jsonify({"ok": False, "error": str(exc)}), 400
     return jsonify({"ok": True})
+
+
+@app.post("/api/comfy/restart")
+def api_comfy_restart():
+    """Stop and start ComfyUI, so it rescans its model folders — the one
+    thing only a restart does.
+
+    An engine YuE Studio did not start (an orphan from an earlier run, one
+    launched by hand, a ComfyUI Desktop) is taken over rather than declared
+    someone else's problem. Each route says which one it took, because "it
+    restarted" means something different in each:
+
+        managed         ours: stopped and started again
+        started         nothing was there: started
+        takeover        someone else's: closed, and ours put in its place
+        manager-reboot  ComfyUI-Manager rebooted it in place
+        stopped         closed, but this app has no ComfyUI of its own
+
+    A refusal is a 409 whose error names the obstacle, not a shrug.
+    """
+    url = cfg["comfy_url"]
+    port = comfy_port(url)
+    can_start = bool(cfg.get("comfy_dir") and cfg.get("python"))
+
+    if comfy_proc.alive():
+        if not can_start:
+            return jsonify({"ok": False, "error": "Run setup first."}), 400
+        _note("Restarting the managed engine…")
+        comfy_proc.stop()
+        try:
+            _start_managed(port)
+        except RuntimeError as exc:
+            return jsonify({"ok": False, "error": str(exc)}), 400
+        return jsonify({"ok": True, "how": "managed"})
+
+    if not comfy_online(url):
+        if not can_start:
+            return jsonify({"ok": False, "error": "Run setup first."}), 400
+        _note("Starting ComfyUI…")
+        try:
+            _start_managed(port)
+        except RuntimeError as exc:
+            return jsonify({"ok": False, "error": str(exc)}), 400
+        return jsonify({"ok": True, "how": "started"})
+
+    how, advice = take_over_port(url, port)
+    if advice:
+        _note(advice)
+        return jsonify({"ok": False, "error": advice}), 409
+    if how == "manager-reboot":
+        _refresh_schema_when_up()
+        return jsonify({"ok": True, "how": "manager-reboot"})
+    if not can_start:
+        return jsonify({"ok": True, "how": "stopped",
+                        "note": "Stopped it. YuE Studio has no ComfyUI of its "
+                                "own to start — run setup, or start yours "
+                                "again yourself."})
+    _note("Starting a managed engine in its place…")
+    try:
+        _start_managed(port)
+    except RuntimeError as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+    return jsonify({"ok": True, "how": "takeover"})
+
+
+@app.get("/api/comfy/log")
+def api_comfy_log():
+    """The engine's own console: the visible cue that it is starting, up, or
+    saying exactly what failed to load. Clamped, because an unbounded n is a
+    way to ask the server for two thousand lines on a 2.5-second poll."""
+    n = as_int(request.args.get("n"), 80, 1, 400)
+    return jsonify({"lines": comfy_proc.tail(n),
+                    "running": comfy_proc.alive(),
+                    "online": comfy_online(cfg["comfy_url"])})
 
 
 TEXT_SETTINGS = ("comfy_url", "comfy_dir", "models_dir", "torch_index")
@@ -1066,32 +1288,96 @@ def api_hf_delete():
 
 
 # --------------------------------------------------------------------------- #
+def engine_trouble() -> list[str]:
+    """Why the engine already answering is no use as it stands, or [].
+
+    Only the problems a restart actually cures. A ComfyUI too old to have the
+    YuE2 nodes is deliberately not one of them: those nodes are part of
+    ComfyUI itself from v0.35.0, so restarting cannot conjure them, and
+    treating their absence as a reason to replace would kill a working engine
+    once per launch and never fix anything.
+    """
+    reasons = []
+    try:
+        client.schema(force=True)
+        checkpoints = client.checkpoints()
+    except Exception as exc:  # noqa: BLE001
+        _note(f"The engine already running would not describe itself "
+              f"({exc}) — leaving it alone.")
+        return []
+    models_dir = Path(cfg["models_dir"]) if cfg.get("models_dir") else None
+    weights_here = bool(models_dir and models_dir.is_dir()
+                        and not bootstrap.missing_models(models_dir, cfg))
+    if weights_here and not any("yue2" in c.lower() for c in checkpoints):
+        reasons.append("it started before the model files landed, so it has "
+                       "not scanned them")
+    return reasons
+
+
+def ensure_engine_at_boot() -> None:
+    """A launch ends with a working engine, without a button being pressed.
+
+    Offline: start the managed one. Online and provably a *different*
+    install: step aside onto a free port — YuE Studio's own gentler cure,
+    which leaves the other engine running (see relocate_engine). Online, at
+    our own address, and useless — a startup scan that ran before the weights
+    landed — restart it in place, through the same looks-like-ComfyUI guard
+    the Restart button uses; stepping aside there would leave the stale engine
+    holding the card and fix nothing. Online and healthy: adopt it, and say
+    so, because silence at that point reads as a failure to start.
+
+    An external-mode setup (`managed` false) is the person's own ComfyUI: it
+    is told what is wrong and left alone.
+    """
+    if not (cfg.get("setup_complete") and cfg.get("auto_start_comfy", True)):
+        return
+    if not (cfg.get("comfy_dir") and cfg.get("python")):
+        return
+    url = cfg["comfy_url"]
+    port = comfy_port(url)
+    try:
+        if not comfy_online(url):
+            _note("Starting ComfyUI from the last setup…")
+            _start_managed(port)
+            return
+
+        # Something answers — but a launch must not take that on faith.
+        reason = foreign_engine_reason()
+        if reason:
+            relocate_engine(reason)
+            return
+
+        trouble = engine_trouble()
+        if not trouble:
+            _note(f"Adopting the ComfyUI already running at {url}.")
+            return
+        if not cfg.get("managed", True):
+            _note("The engine already running has problems ("
+                  + "; ".join(trouble) + ") but it is yours, not YuE Studio's "
+                  "— restart it yourself, or press Restart the engine.")
+            return
+        _note("The engine already running is no use as it stands — "
+              + "; ".join(trouble) + ". Replacing it.")
+        how, advice = take_over_port(url, port)
+        if advice:
+            _note(advice)
+            return
+        if how == "manager-reboot":
+            _refresh_schema_when_up()
+            return
+        _note("Starting a managed engine in its place…")
+        _start_managed(port)
+    except RuntimeError as exc:
+        # The app still comes up; the Engine page explains the rest.
+        _note(str(exc))
+
+
 def main() -> None:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     TRACKS_DIR.mkdir(parents=True, exist_ok=True)
     threading.Thread(target=ws_listener, daemon=True).start()
-
-    if cfg.get("setup_complete") and cfg.get("auto_start_comfy", True) \
-            and cfg.get("comfy_dir") and cfg.get("python"):
-        try:
-            if not comfy_online(cfg["comfy_url"]):
-                port = comfy_port(cfg["comfy_url"])
-                progress.log("Restarting ComfyUI from the last setup…")
-                comfy_proc.start(cfg["python"], Path(cfg["comfy_dir"]), port,
-                                 progress,
-                                 Path(cfg["models_dir"])
-                                 if cfg.get("models_dir") else None)
-            else:
-                # Something answers — but launches must not take that on
-                # faith. When it is provably not the managed install, move to
-                # a free port and start the right one, exactly as a person
-                # would in Settings, and keep the new address for next time.
-                reason = foreign_engine_reason()
-                if reason:
-                    relocate_engine(reason)
-        except RuntimeError as exc:
-            # The app still comes up; the Engine page explains the rest.
-            progress.log(str(exc))
+    # The engine comes up on its own; the page can open while it does.
+    threading.Thread(target=ensure_engine_at_boot, daemon=True).start()
 
     url = f"http://127.0.0.1:{PORT}"
     print(f"\n  YuE Studio  →  {url}\n")

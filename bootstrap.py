@@ -20,6 +20,7 @@ import os
 import platform
 import re
 import shutil
+import signal
 import subprocess
 import sys
 import threading
@@ -428,6 +429,19 @@ class ComfyProcess:
         self.lines: list[str] = []
         self._lock = threading.Lock()
 
+    def note(self, msg: str) -> None:
+        """An app-side line in the engine console.
+
+        What YuE Studio does *to* the engine — taking a port back, stopping a
+        pid, adopting what is already there — belongs in the same ring buffer
+        as what the engine itself says, in the order it happened. Split across
+        two logs, neither one explains the other.
+        """
+        with self._lock:
+            self.lines.append(f"[YuE Studio] {msg}")
+            if len(self.lines) > 2000:
+                del self.lines[:1000]
+
     def alive(self) -> bool:
         return self.proc is not None and self.proc.poll() is None
 
@@ -496,8 +510,15 @@ class ComfyProcess:
                     pass
 
 
-def wait_for_comfy(url: str, timeout: int = 900) -> bool:
-    deadline = time.time() + timeout
+def wait_for_comfy(url: str, timeout: int = 900, on_wait=None) -> bool:
+    """Poll until ComfyUI answers.
+
+    `on_wait(elapsed, timeout)` runs on every pass. A model load has no
+    percentage to report, so the only honest progress is how long it has
+    been waiting — which is what stops a slow first start looking like a hang.
+    """
+    started = time.time()
+    deadline = started + timeout
     while time.time() < deadline:
         try:
             r = requests.get(f"{url}/system_stats", timeout=4)
@@ -505,6 +526,11 @@ def wait_for_comfy(url: str, timeout: int = 900) -> bool:
                 return True
         except Exception:
             pass
+        if on_wait:
+            try:
+                on_wait(time.time() - started, timeout)
+            except Exception:
+                pass
         time.sleep(2)
     return False
 
@@ -514,6 +540,179 @@ def comfy_online(url: str) -> bool:
         return requests.get(f"{url}/system_stats", timeout=3).status_code == 200
     except Exception:
         return False
+
+
+def comfy_stats(url: str) -> dict | None:
+    """What is actually answering on the address, or None if nothing is.
+
+    The `.system` dict carries argv, and argv[0] names the main.py the engine
+    was launched from — the only way to tell *which* install holds the port.
+    """
+    try:
+        r = requests.get(f"{url}/system_stats", timeout=3)
+        if r.status_code == 200:
+            return (r.json() or {}).get("system") or {}
+    except Exception:
+        pass
+    return None
+
+
+# --------------------------------------------------------------------------- #
+# who holds a port
+#
+# An engine YuE Studio did not start is still an engine in the way, and the
+# old advice — "close it yourself" — sent people hunting a windowless python
+# in Task Manager. These find it, name it, and stop it.
+# --------------------------------------------------------------------------- #
+def _pids_from_proc_net(port: int) -> list[int]:
+    """Linux, with no external tools: the listening socket's inode out of
+    /proc/net/tcp*, then the process whose fd table holds it.
+
+    lsof is not installed everywhere and ss output differs between distros;
+    /proc is always there on the platform this runs on.
+    """
+    inodes = set()
+    for name in ("/proc/net/tcp", "/proc/net/tcp6"):
+        try:
+            lines = Path(name).read_text().splitlines()[1:]
+        except OSError:
+            continue
+        for line in lines:
+            parts = line.split()
+            if len(parts) < 10:
+                continue
+            local, state, inode = parts[1], parts[3], parts[9]
+            # 0A is TCP_LISTEN; the local port is four uppercase hex digits.
+            if state == "0A" and local.rsplit(":", 1)[-1] == f"{port:04X}":
+                inodes.add(inode)
+    if not inodes:
+        return []
+    wanted = {f"socket:[{i}]" for i in inodes}
+    pids = set()
+    for proc in Path("/proc").iterdir():
+        if not proc.name.isdigit():
+            continue
+        try:
+            for fd in (proc / "fd").iterdir():
+                try:
+                    target = os.readlink(fd)
+                except OSError:
+                    continue
+                if target in wanted:
+                    pids.add(int(proc.name))
+                    break
+        except OSError:
+            continue        # a process that exited mid-scan, or another user's
+    return sorted(pids)
+
+
+def port_pids(port: int) -> list[int]:
+    """Whoever is listening on the port."""
+    if platform.system() == "Windows":
+        pids = set()
+        try:
+            out = _run(["netstat", "-ano", "-p", "TCP"], timeout=25).stdout
+        except Exception:
+            return []
+        for line in out.splitlines():
+            parts = line.split()
+            if (len(parts) >= 5 and parts[0] == "TCP"
+                    and parts[3] == "LISTENING"
+                    and parts[1].rsplit(":", 1)[-1] == str(port)):
+                try:
+                    pids.add(int(parts[4]))
+                except ValueError:
+                    pass
+        return sorted(pids)
+    found = _pids_from_proc_net(port)
+    if found:
+        return found
+    if shutil.which("lsof"):
+        try:
+            out = _run(["lsof", "-ti", f"tcp:{port}", "-sTCP:LISTEN"],
+                       timeout=25).stdout
+            return sorted({int(t) for t in out.split() if t.strip().isdigit()})
+        except Exception:
+            pass
+    return []
+
+
+def pid_cmdline(pid: int) -> str:
+    """The command line a pid was started with, or "" if it cannot be read.
+
+    This is what decides whether a process gets stopped: anything that does
+    not look like ComfyUI is named back to the person instead.
+    """
+    try:
+        if platform.system() == "Windows":
+            out = _run(["wmic", "process", "where", f"processid={pid}",
+                        "get", "commandline"], timeout=25).stdout
+            lines = [ln.strip() for ln in out.splitlines()
+                     if ln.strip() and "CommandLine" not in ln]
+            return lines[0] if lines else ""
+        cmd = Path(f"/proc/{pid}/cmdline")
+        if cmd.exists():
+            return cmd.read_bytes().replace(b"\0", b" ").decode(
+                "utf-8", "replace").strip()
+        return _run(["ps", "-p", str(pid), "-o", "command="],
+                    timeout=25).stdout.strip()
+    except Exception:
+        return ""
+
+
+def _pid_gone(pid: int) -> bool:
+    """True once the pid is no longer a running process.
+
+    A zombie still answers kill(pid, 0): it keeps its pid until its parent
+    reaps it, while holding no sockets and running no code. Counting one as
+    alive costs five seconds of polling and then reports a SIGKILL that
+    stopped nothing — the opposite of what kill_pid is for.
+    """
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return True
+    except PermissionError:
+        return False
+    try:
+        # "12 (a name with spaces) Z 1 ..." — split after the last ')'.
+        state = Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[-1].split()
+        return bool(state) and state[0] == "Z"
+    except OSError:
+        return False
+
+
+def kill_pid(pid: int) -> str:
+    """Stop a process: politely first, firmly if it lingers.
+
+    Returns what the system said — "stopped", "already gone", "access denied",
+    "sent SIGKILL" — so a refusal can be *shown* rather than guessed at. An
+    access-denied is the whole diagnosis on Windows, and swallowing it turns a
+    one-line answer ("run as administrator") into an unexplained failure.
+    """
+    if platform.system() == "Windows":
+        try:
+            out = _run(["taskkill", "/PID", str(pid), "/T", "/F"], timeout=30)
+            return (out.stdout or out.stderr or "").strip()
+        except Exception as exc:  # noqa: BLE001
+            return str(exc)
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except ProcessLookupError:
+        return "already gone"
+    except PermissionError:
+        return "access denied"
+    for _ in range(25):
+        time.sleep(0.2)
+        if _pid_gone(pid):
+            return "stopped"
+    try:
+        os.kill(pid, signal.SIGKILL)
+    except ProcessLookupError:
+        return "stopped"
+    except PermissionError:
+        return "access denied"
+    return "sent SIGKILL"
 
 
 # --------------------------------------------------------------------------- #

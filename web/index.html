@@ -610,7 +610,14 @@
           <button class="btn" id="btnRecheck">Recheck</button>
           <button class="btn go" id="btnInstallAll">Install everything missing</button>
           <button class="btn" id="btnStartEngine">Start the engine</button>
+          <button class="btn" id="btnRestartEngine">Restart the engine</button>
         </div>
+      </div>
+      <div class="panel">
+        <h2>Engine console</h2>
+        <p class="sub" id="engineState">Checking…</p>
+        <div class="log" id="engineLog">Nothing yet — start the engine and its
+          own output lands here.</div>
       </div>
       <div class="panel">
         <h2>PyTorch build</h2>
@@ -812,7 +819,7 @@ function show(view) {
   document.body.classList.toggle("solo", view === "models" || view === "engine");
   $("mainCol").scrollTop = 0;
   if (view === "models") { loadHf(); loadLocal(); }
-  if (view === "engine") loadDeps();
+  if (view === "engine") { loadDeps(); pollEngineLog(); }
   if (view === "library") renderLib();
   if (view === "home") renderHome();
 }
@@ -1515,21 +1522,15 @@ async function startEngine() {
             "to " + r.comfy_url + " and is starting its own there.");
     }
     // There is no honest percentage for a model load, so show the real thing
-    // instead: elapsed time on the button and ComfyUI's own console below.
+    // instead: elapsed time on the button, and ComfyUI's own console in the
+    // Engine console panel, which polls it on its own.
     $("taskTitle").textContent = "Starting the engine — the first start loads " +
-      "the model, which can take a few minutes. Its console:";
+      "the model, which can take a few minutes. Its console is above.";
+    pollEngineLog();
     const began = Date.now();
     while (Date.now() - began < 5 * 60 * 1000) {
       await new Promise((tick) => setTimeout(tick, 1500));
       b.label("Starting… " + Math.round((Date.now() - began) / 1000) + "s");
-      try {
-        const snap = await api("/api/setup/state?since=999999");
-        if (snap.comfy_tail && snap.comfy_tail.length) {
-          const log = $("taskLog");
-          log.textContent = snap.comfy_tail.join("\n");
-          log.scrollTop = log.scrollHeight;
-        }
-      } catch (e) { /* the console feed is a nicety */ }
       let st = null;
       try { st = await api("/api/status"); } catch (e) { continue; }
       if (st.comfy_online) {
@@ -1540,17 +1541,88 @@ async function startEngine() {
       }
       if (st.comfy_running_managed === false) {
         $("taskTitle").textContent = "The engine stopped while starting — " +
-          "its last words are below.";
-        toast("ComfyUI stopped while starting — see the Activity log.", true);
+          "its last words are in the Engine console above.";
+        toast("ComfyUI stopped while starting — see the Engine console.", true);
         return;
       }
     }
     $("taskTitle").textContent = "Still not answering after five minutes — " +
-      "its console is below.";
+      "its console is above.";
     toast("The engine did not come up within five minutes — see the " +
-          "Activity log.", true);
+          "Engine console.", true);
   } catch (e) { toast(e.message, true); }
   finally { engineStarting = false; b.done(); loadDeps(); }
+}
+
+/* A restart is the only thing that makes ComfyUI rescan its model folders:
+   it reads them once, at startup, so a checkpoint downloaded afterwards is
+   on disk and invisible until this. It also takes over an engine YuE Studio
+   did not start, which is why the reply says which route it took. */
+async function restartEngine() {
+  const b = busy($("btnRestartEngine"), "Restarting…");
+  try {
+    const r = await api("/api/comfy/restart", { method:"POST" });
+    if (r.how === "manager-reboot") {
+      toast("ComfyUI-Manager is rebooting the engine — it rescans the model " +
+            "folders on the way back up.");
+    } else if (r.how === "takeover") {
+      toast("That ComfyUI was not started here, so it was closed and YuE " +
+            "Studio's own is starting in its place. Watch the console below.");
+    } else if (r.how === "started") {
+      toast("Nothing was running, so the engine is starting. Watch the " +
+            "console below.");
+    } else if (r.how === "stopped") {
+      toast(r.note || "Stopped it.", true);
+    } else {
+      toast("Restarting the engine — it rescans its model folders now. " +
+            "Watch the console below.");
+    }
+    show("engine");
+  } catch (e) { toast(e.message, true); }
+  finally { b.done(); loadDeps(); }
+}
+
+/* ComfyUI's own console, polled while the Engine page is open and nowhere
+   else. This is the visible cue that it is starting, up, or saying exactly
+   what failed to load — the thing whose absence made a slow first start and
+   a dead engine look identical. */
+let engineLogTimer = null;
+async function pollEngineLog() {
+  clearTimeout(engineLogTimer);
+  if (S.view !== "engine") return;
+  let d;
+  try { d = await api("/api/comfy/log?n=120"); }
+  catch (e) { engineLogTimer = setTimeout(pollEngineLog, 4000); return; }
+  const box = $("engineLog");
+  const text = (d.lines || []).join("\n");
+  if (text && box.textContent !== text) {
+    // Only follow the tail when it was already at the tail — otherwise
+    // reading back through a traceback yanks you to the bottom every 2.5s.
+    const atEnd = box.scrollTop + box.clientHeight >= box.scrollHeight - 30;
+    box.textContent = text;
+    if (atEnd) box.scrollTop = box.scrollHeight;
+  }
+  const st = S.status || {};
+  const where = (st.config && st.config.comfy_url) || "this address";
+  let state;
+  if (st.stale_models && d.online) {
+    state = "⚠ The model files are on disk, but this ComfyUI started before " +
+            "they landed and has not rescanned. Press Restart the engine.";
+  } else if (st.engine_mismatch && d.online) {
+    state = "⚠ A different ComfyUI is answering at " + where +
+            (st.engine_argv ? " (" + st.engine_argv + ")" : "") +
+            ". Close it, or point Settings at the folder it runs from.";
+  } else if (d.running) {
+    state = d.online ? "Running — started by YuE Studio."
+                     : "Starting… the first start is slow.";
+  } else if (d.online) {
+    state = "Online, but started outside YuE Studio — Restart the engine " +
+            "will take it over.";
+  } else {
+    state = "Offline. Press Start the engine.";
+  }
+  $("engineState").textContent = state;
+  engineLogTimer = setTimeout(pollEngineLog, 2500);
 }
 
 /* ========================= setup ========================= */
@@ -1894,6 +1966,7 @@ function wire() {
   });
   $("btnInstallAll").addEventListener("click", installAllMissing);
   $("btnStartEngine").addEventListener("click", startEngine);
+  $("btnRestartEngine").addEventListener("click", restartEngine);
   $("btnCancelTask").addEventListener("click", () => {
     if (S.taskId) api("/api/tasks/" + S.taskId + "/cancel", { method:"POST" }); });
   $("btnSaveTorch").addEventListener("click", async () => {
