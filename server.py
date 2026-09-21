@@ -92,6 +92,23 @@ def as_cursor(raw: str) -> int:
         return 0
 
 
+def json_object() -> dict:
+    """Return request JSON when it is an object, otherwise an empty object.
+
+    Valid JSON can also be an array, string, number, or null.  Those values
+    used to reach the first ``.get()`` in a write route and turn malformed
+    input into a 500 response.  Keeping the shape check at the HTTP boundary
+    lets every endpoint handle such input consistently.
+    """
+    body = request.get_json(silent=True)
+    return body if isinstance(body, dict) else {}
+
+
+def as_bool(value, default: bool = False) -> bool:
+    """Read a JSON boolean without treating strings such as "false" as true."""
+    return value if isinstance(value, bool) else default
+
+
 # Bounds are the YuE2 and KSampler node limits, so a silly number is clamped
 # here instead of being rejected by ComfyUI after the job has already started.
 def clean_generate(body: dict) -> dict:
@@ -111,9 +128,9 @@ def clean_generate(body: dict) -> dict:
         "cover_mode": (as_text(body.get("cover_mode"))
                        if as_text(body.get("cover_mode")) in ("melody", "full")
                        else "melody"),
-        "instrumental": bool(body.get("instrumental")),
-        "use_abc": bool(body.get("use_abc", True)),
-        "tiled_decode": bool(body.get("tiled_decode", True)),
+        "instrumental": as_bool(body.get("instrumental")),
+        "use_abc": as_bool(body.get("use_abc"), True),
+        "tiled_decode": as_bool(body.get("tiled_decode"), True),
         "count": as_int(body.get("count"), 1, 1, 4),
         # The engine's own ceiling is applied when the graph is built; this is
         # only here to stop a nonsense number getting that far.
@@ -423,7 +440,7 @@ def ws_listener() -> None:
 TERMINAL = ("done", "error", "cancelled")
 
 
-def run_job(job_id: str, params: dict) -> None:
+def run_job(job_id: str, params: dict, built: dict | None = None) -> None:
     def set_state(**kw):
         with jobs_lock:
             # Note when it stopped, so the job list can keep it around long
@@ -437,7 +454,11 @@ def run_job(job_id: str, params: dict) -> None:
 
     try:
         set_state(stage="Building the graph", pct=2)
-        built = client.build_prompt(params)
+        # The API normally builds this before accepting the job, so a missing
+        # node/model is reported to the Create click immediately rather than
+        # appearing later on an asynchronous card. Keep the fallback for
+        # callers that invoke run_job directly.
+        built = built or client.build_prompt(params)
         set_state(stage="Queued in ComfyUI", pct=4, seed=built["seed"])
         prompt_id = client.queue(built["prompt"])
         set_state(prompt_id=prompt_id, stage="Writing the melody plan", pct=6)
@@ -517,14 +538,27 @@ def run_job(job_id: str, params: dict) -> None:
         set_state(stage="Saving the track", pct=94)
         item = outs[0]
         track_id = uuid.uuid4().hex[:12]
-        ext = Path(item["filename"]).suffix or ".flac"
+        ext = Path(as_text(item.get("filename"))).suffix.lower()
+        if ext not in (".flac", ".mp3", ".opus", ".wav", ".ogg", ".m4a"):
+            ext = ".flac"
         TRACKS_DIR.mkdir(parents=True, exist_ok=True)
         dest = TRACKS_DIR / f"{track_id}{ext}"
-        with client.view(item) as resp:
-            resp.raise_for_status()
-            with open(dest, "wb") as fh:
-                for chunk in resp.iter_content(1024 * 256):
-                    fh.write(chunk)
+        partial = dest.with_suffix(dest.suffix + ".part")
+        try:
+            with client.view(item) as resp:
+                resp.raise_for_status()
+                with open(partial, "wb") as fh:
+                    for chunk in resp.iter_content(1024 * 256):
+                        if chunk:
+                            fh.write(chunk)
+            if partial.stat().st_size == 0:
+                raise ComfyError("ComfyUI returned an empty audio file.")
+            partial.replace(dest)
+        except Exception:
+            # A dropped connection must not leave something that looks like a
+            # playable track, or an orphan that accumulates forever.
+            partial.unlink(missing_ok=True)
+            raise
 
         if wanted == "wav":
             set_state(stage="Saving as wav", pct=96)
@@ -588,9 +622,10 @@ def api_status():
     missing = []
     if models_dir and models_dir.is_dir():
         missing = [Path(m[0]).name for m in bootstrap.missing_models(models_dir, cfg)]
-    ready = bool(cfg.get("setup_complete")) and online and not missing
     payload = {
-        "ready": ready,
+        # Provisional until the live engine has proved that it exposes the
+        # nodes and checkpoint needed to construct a generation graph.
+        "ready": False,
         "comfy_online": online,
         "setup_complete": bool(cfg.get("setup_complete")),
         "missing_models": missing,
@@ -603,7 +638,9 @@ def api_status():
     }
     if online:
         try:
+            client.ensure_supported()
             payload["checkpoints"] = client.checkpoints()
+            client.pick_checkpoint()
             payload["has_cover_model"] = bool(
                 [e for e in client.audio_encoders() if "sheetsage" in e.lower()])
             payload["samplers"], payload["schedulers"] = client.samplers()
@@ -633,6 +670,11 @@ def api_status():
         payload["engine_mismatch"] = bool(
             root and cfg.get("comfy_dir")
             and not manager.same_install(cfg["comfy_dir"], root))
+        payload["ready"] = bool(
+            cfg.get("setup_complete") and not missing
+            and not payload.get("schema_error")
+            and not payload.get("stale_models")
+            and not payload.get("engine_mismatch"))
     return jsonify(payload)
 
 
@@ -640,7 +682,7 @@ def api_status():
 def api_setup_start():
     if progress.running:
         return jsonify({"ok": False, "error": "Setup is already running."}), 409
-    body = request.get_json(silent=True) or {}
+    body = json_object()
     mode = as_text(body.get("mode"), "auto")
     if mode not in ("auto", "existing", "managed", "external"):
         # Anything else used to fall through to the managed route, which
@@ -978,7 +1020,8 @@ def settings_from(body: dict, keys: tuple[str, ...]) -> dict:
             continue
         value = body[key]
         if key in FLAG_SETTINGS:
-            change[key] = bool(value)
+            if isinstance(value, bool):
+                change[key] = value
         elif isinstance(value, str):
             change[key] = value
         # Anything else is not something the page sends. Leaving the key alone
@@ -1006,7 +1049,7 @@ def api_config_get():
 
 @app.post("/api/config")
 def api_config():
-    body = request.get_json(silent=True) or {}
+    body = json_object()
     cfg.update(settings_from(body, TEXT_SETTINGS + FLAG_SETTINGS))
     client.url = cfg["comfy_url"]
     save_config(cfg)
@@ -1018,7 +1061,7 @@ def api_config():
 # --------------------------------------------------------------------------- #
 @app.post("/api/generate")
 def api_generate():
-    params = clean_generate(request.get_json(silent=True) or {})
+    params = clean_generate(json_object())
     if not params["style"].strip():
         return jsonify({"error": "Add a style description before generating."}), 400
     if not comfy_online(cfg["comfy_url"]):
@@ -1026,6 +1069,23 @@ def api_generate():
                                  "Settings."}), 503
 
     count = params["count"]
+    # Validate and construct every graph before creating job records. This is
+    # both a readiness probe and an all-or-nothing batch: an outdated ComfyUI,
+    # stale model list, or invalid selected option is returned directly and
+    # cannot leave several doomed jobs behind in the queue UI.
+    render_params = {**params,
+                     "format": render_format(
+                         (params.get("format") or "flac").lower())}
+    try:
+        built_prompts = [client.build_prompt(render_params)
+                         for _ in range(count)]
+    except ComfyError as exc:
+        return jsonify({"error": str(exc)}), 409
+    except requests.RequestException:
+        return jsonify({"error": "ComfyUI stopped answering while YuE Studio "
+                                 "checked whether it was ready. Try again after "
+                                 "the Engine page says ready."}), 503
+
     created = []
     with jobs_lock:
         stale = [k for k, j in jobs.items()
@@ -1033,14 +1093,14 @@ def api_generate():
                  and time.time() - j.get("ended", j["created"]) > 3600]
         for k in stale:
             jobs.pop(k, None)
-    for _ in range(count):
+    for built in built_prompts:
         job_id = uuid.uuid4().hex[:12]
         with jobs_lock:
             jobs[job_id] = {"id": job_id, "status": "running", "pct": 0,
                             "stage": "Starting", "created": time.time(),
                             "title": track_title(params),
                             "style": params.get("style", "")}
-        threading.Thread(target=run_job, args=(job_id, dict(params)),
+        threading.Thread(target=run_job, args=(job_id, dict(params), built),
                          daemon=True).start()
         created.append(job_id)
         time.sleep(0.2)  # keep queue order stable
@@ -1109,13 +1169,14 @@ def api_track(track_id: str):
 
 @app.patch("/api/track/<track_id>")
 def api_rename(track_id: str):
-    body = request.get_json(silent=True) or {}
+    body = json_object()
     with library_lock:
         items = read_library()
         for item in items:
             if item["id"] == track_id:
-                if body.get("title"):
-                    item["title"] = body["title"][:120]
+                title = as_text(body.get("title")).strip()
+                if title:
+                    item["title"] = title[:120]
                 if body.get("seconds") is not None:
                     # Sent by the player once the browser has decoded the file,
                     # for formats audio_duration() could not read without
@@ -1169,7 +1230,7 @@ def api_deps():
 
 @app.post("/api/deps/<dep_id>/install")
 def api_dep_install(dep_id: str):
-    body = request.get_json(silent=True) or {}
+    body = json_object()
     if dep_id not in manager.INSTALLABLE:
         return jsonify({"error": f"There is nothing called '{dep_id}' to "
                                  "install."}), 400
@@ -1222,7 +1283,7 @@ def api_hf_settings():
 
 @app.post("/api/hf/settings")
 def api_hf_settings_save():
-    body = request.get_json(silent=True) or {}
+    body = json_object()
     if "token" in body:
         cfg["hf_token"] = as_text(body["token"]).strip()
     if body.get("endpoint") is not None:
@@ -1257,15 +1318,16 @@ def api_hf_browse():
 
 @app.post("/api/hf/download")
 def api_hf_download():
-    body = request.get_json(silent=True) or {}
-    repo = (body.get("repo") or cfg.get("hf_repo") or manager.DEFAULT_REPO).strip()
-    path = (body.get("path") or "").strip()
+    body = json_object()
+    repo = (as_text(body.get("repo")) or cfg.get("hf_repo")
+            or manager.DEFAULT_REPO).strip()
+    path = as_text(body.get("path")).strip()
     if not path:
         return jsonify({"error": "Pick a file to download."}), 400
     try:
         task = manager.hf_download(cfg, repo, path,
-                                   body.get("folder") or "",
-                                   body.get("revision") or "main")
+                                   as_text(body.get("folder")),
+                                   as_text(body.get("revision")) or "main")
         return jsonify({"ok": True, "task": task.view()})
     except Exception as exc:  # noqa: BLE001
         return jsonify({"error": str(exc)}), 400
@@ -1279,7 +1341,7 @@ def api_hf_local():
 
 @app.delete("/api/hf/local")
 def api_hf_delete():
-    body = request.get_json(silent=True) or {}
+    body = json_object()
     try:
         manager.delete_model(cfg, body.get("folder", ""), body.get("name", ""))
         return jsonify({"ok": True})

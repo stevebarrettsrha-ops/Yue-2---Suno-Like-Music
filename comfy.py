@@ -67,8 +67,13 @@ class ComfyClient:
         merged.update(spec.get("optional", {}) or {})
         return merged
 
-    REQUIRED_NODES = ("CheckpointLoaderSimple", "KSampler", "YuE2GenerateMusic",
-                      "EmptyYuE2LatentAudio", "SaveAudioAdvanced")
+    # Everything used by a default Create click. Optional branches are checked
+    # when selected (VAEDecodeAudio for untiled output, and the SheetSage nodes
+    # for covers), but the status endpoint must not advertise "Engine ready"
+    # when the ordinary text-to-song graph cannot even be constructed.
+    REQUIRED_NODES = ("CheckpointLoaderSimple", "KSampler", "YuE2GenerateABC",
+                      "YuE2GenerateMusic", "EmptyYuE2LatentAudio",
+                      "VAEDecodeAudioTiled", "SaveAudioAdvanced")
 
     def ensure_supported(self) -> None:
         """Fail with the real cause before anything else can mask it."""
