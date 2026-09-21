@@ -749,11 +749,28 @@ def model_paths_file(comfy_dir: Path, models_dir: Path) -> Path | None:
 
 
 def missing_models(models_dir: Path, cfg: dict) -> list[tuple]:
+    """Required downloads that are absent or obviously incomplete.
+
+    Older releases treated any directory entry as a complete multi-gigabyte
+    model. A cancelled/manual download could therefore make setup green and
+    reach the YuE nodes, where Windows reports only ``[Errno 22] Invalid
+    argument``. The catalogue sizes are rounded, so allow five percent of
+    packaging variation while rejecting partial files.
+    """
     wanted = [m for m in MODELS if m[3] or
               (m[0].startswith("audio_encoders") and cfg.get("download_cover_model"))]
     if cfg.get("download_bf16"):
         wanted.append(MODEL_BF16)
-    return [m for m in wanted if not (models_dir / m[0]).exists()]
+    missing = []
+    for model in wanted:
+        path, expected = models_dir / model[0], model[2]
+        try:
+            complete = path.is_file() and path.stat().st_size >= expected * 0.95
+        except OSError:
+            complete = False
+        if not complete:
+            missing.append(model)
+    return missing
 
 
 def run_setup(cfg: dict, prog: Progress, comfy: ComfyProcess,

@@ -866,12 +866,12 @@ function wireSeg(id, onChange) {
     segSet(id, b.dataset.v); if (onChange) onChange(b.dataset.v); saveDraft(); }));
 }
 function readOpts() {
-  const limit = (S.status && S.status.max_duration) || 900;
+  const automatic = (S.status && S.status.recommended_duration) || 180;
   const picked = $("duration").value;
   return { vocal:segGet("segVocal"),
     plan:segGet("segPlan"), tiled:segGet("segTiled"),
     durationChoice:picked,
-    duration:picked === "auto" ? limit : Number(picked),
+    duration:picked === "auto" ? automatic : Number(picked),
     steps:Number($("steps").value),
     topp:Number($("topp").value), rep:Number($("rep").value) };
 }
@@ -1770,15 +1770,15 @@ async function refreshStatus() {
     st.ready ? "ready" : st.comfy_online ? "loading" : "offline";
   if (!st.setup_complete && $("setupVeil").hidden) openSetup();
 }
-/* Real song lengths rather than a slider of seconds. Auto asks for the longest
-   the engine will make: the node treats it as a ceiling and stops when the
-   song is over, so Auto means "sing all of it" rather than "make it long". */
+/* Real song lengths rather than a slider of seconds. Auto uses the engine's
+   tested default rather than its absolute allocation limit; explicit longer
+   choices remain available for songs that need them. */
 function fillDurations(limit) {
   const sel = $("duration");
   const keep = sel.value || store("yue.duration") || "auto";
   sel.innerHTML = "";
   const auto = document.createElement("option");
-  auto.value = "auto"; auto.textContent = "Auto — until the song ends";
+  auto.value = "auto"; auto.textContent = "Auto — recommended";
   sel.appendChild(auto);
   for (let minutes = 2; minutes * 60 <= limit; minutes++) {
     const o = document.createElement("option");

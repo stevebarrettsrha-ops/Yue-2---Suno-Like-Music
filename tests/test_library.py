@@ -28,6 +28,13 @@ def _point_at(data: Path) -> None:
 
 def run(slow: bool = False) -> Suite:
     s = Suite("library")
+    cleaned = server.clean_generate({"style": "x", "instrumental": "false",
+                                     "use_abc": "false",
+                                     "tiled_decode": "false"})
+    s.check("strings cannot masquerade as generation booleans",
+            cleaned["instrumental"] is False
+            and cleaned["use_abc"] is True
+            and cleaned["tiled_decode"] is True)
     with Workspace() as data:
         _point_at(data)
 

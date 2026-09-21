@@ -177,9 +177,9 @@ Leave lyrics empty, or switch Instrumental on, for a vocal-free track.
 - *Length* — real song lengths, 2:00 upwards, as far as the engine allows
   (15:00 with the current YuE2 node). This is a ceiling, not a target: YuE2
   stops when the song is over, so a longer setting never pads a short song, it
-  only stops a long one being cut off mid-verse. **Auto** asks for the longest
-  the engine will make, which is what to use when the lyrics matter more than
-  the running time.
+  only stops a long one being cut off mid-verse. **Auto** uses the engine's
+  tested default (currently 6:00), avoiding the large up-front allocation of
+  its absolute 15-minute limit. Pick a longer ceiling explicitly when needed.
 - *Seed* — leave blank for random, or fix it to re-roll a song with one change.
 - *Tiled decode* — leave on unless you have plenty of VRAM; off is faster.
 ### Words it cannot say

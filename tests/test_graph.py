@@ -111,6 +111,8 @@ def run(slow: bool = False) -> Suite:
         # cut off. Auto used to send 240 and cut every song at four minutes.
         s.equal("the ceiling is read from the engine, not assumed",
                 client.duration_limit(), 900)
+        s.equal("Auto uses the engine's tested default, not its hard ceiling",
+                client.duration_default(), 360)
         for asked, sent in ((180, 180), (420, 420), (900, 900), (5000, 900)):
             g = client.build_prompt({"style": "x", "lyrics": "y",
                                      "duration": asked})

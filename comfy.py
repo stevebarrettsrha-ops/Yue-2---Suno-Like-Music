@@ -67,8 +67,13 @@ class ComfyClient:
         merged.update(spec.get("optional", {}) or {})
         return merged
 
-    REQUIRED_NODES = ("CheckpointLoaderSimple", "KSampler", "YuE2GenerateMusic",
-                      "EmptyYuE2LatentAudio", "SaveAudioAdvanced")
+    # Everything used by a default Create click. Optional branches are checked
+    # when selected (VAEDecodeAudio for untiled output, and the SheetSage nodes
+    # for covers), but the status endpoint must not advertise "Engine ready"
+    # when the ordinary text-to-song graph cannot even be constructed.
+    REQUIRED_NODES = ("CheckpointLoaderSimple", "KSampler", "YuE2GenerateABC",
+                      "YuE2GenerateMusic", "EmptyYuE2LatentAudio",
+                      "VAEDecodeAudioTiled", "SaveAudioAdvanced")
 
     def ensure_supported(self) -> None:
         """Fail with the real cause before anything else can mask it."""
@@ -203,6 +208,17 @@ class ComfyClient:
             return int(float(opts.get("max") or 0)) or 900
         except (TypeError, ValueError):
             return 900
+
+    def duration_default(self) -> int:
+        """The engine author's tested default, distinct from its hard limit."""
+        try:
+            spec = self.node_inputs("YuE2GenerateMusic").get("max_duration")
+            opts = (spec[1] if isinstance(spec, (list, tuple)) and len(spec) > 1
+                    and isinstance(spec[1], dict) else {})
+            value = int(float(opts.get("default") or 0))
+            return max(1, min(value, self.duration_limit())) if value else 180
+        except (ComfyError, TypeError, ValueError):
+            return 180
 
     def pick_option(self, spec, *preferred: str) -> str | None:
         """The first preferred choice this schema actually offers.

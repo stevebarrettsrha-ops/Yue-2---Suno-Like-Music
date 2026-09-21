@@ -150,8 +150,9 @@ def run(slow: bool = False) -> Suite:
         models = root / "models"
         for folder in ("checkpoints", "audio_encoders"):
             (models / folder).mkdir(parents=True)
-        for rel, _u, _s, _r in bootstrap.MODELS:
-            (models / rel).write_bytes(b"0" * 10)
+        for rel, _u, size, _r in bootstrap.MODELS:
+            with (models / rel).open("wb") as handle:
+                handle.truncate(size)
         cfg = {**bootstrap.DEFAULT_CONFIG, "models_dir": str(models),
                "comfy_url": "http://127.0.0.1:1"}
 
@@ -167,6 +168,12 @@ def run(slow: bool = False) -> Suite:
                 f"{row['state']}: {row['detail'][:80]}")
         s.check("engine unreachable — does not accuse it of anything",
                 models_row(None)["state"] == "ok")
+
+        checkpoint = models / bootstrap.MODELS[0][0]
+        checkpoint.write_bytes(b"partial download")
+        s.check("a truncated checkpoint is missing, not generation-ready",
+                Path(bootstrap.missing_models(models, cfg)[0][0]).name
+                == checkpoint.name)
 
     # -- the port answered by a ComfyUI we are not managing ------------------
     s.check("the same folder is the same install",

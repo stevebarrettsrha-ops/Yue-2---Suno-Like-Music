@@ -62,6 +62,7 @@ def ws_send(obj):
                 WS_CLIENTS.remove(sock)
 INTERRUPTS = []
 DELETES = []
+FAILED_NODES = set()
 DELAY = float(__import__("os").environ.get("MOCK_DELAY", "2"))
 
 
@@ -149,12 +150,22 @@ def _execute(pid, graph):
                 break
     time.sleep(0)
     fail_after = float(__import__("os").environ.get("MOCK_FAIL_AFTER", "0"))
-    if fail_after:
+    fail_node = __import__("os").environ.get("MOCK_FAIL_NODE", "")
+    graph_has_fail_node = any(n.get("class_type") == fail_node
+                              for n in graph.values())
+    fail_once = bool(__import__("os").environ.get("MOCK_FAIL_ONCE"))
+    should_fail_node = (fail_node and graph_has_fail_node
+                        and (not fail_once or fail_node not in FAILED_NODES))
+    if fail_after or should_fail_node:
         with LOCK:
+            if should_fail_node:
+                FAILED_NODES.add(fail_node)
             QUEUE_RUNNING.remove(pid)
             HISTORY[pid] = {"status": {"status_str": "error", "messages": [
-                ["execution_error", {"node_type": "KSampler",
-                                     "exception_message": "CUDA out of memory"}]]},
+                ["execution_error", {
+                    "node_type": fail_node or "KSampler",
+                    "exception_message": ("[Errno 22] Invalid argument"
+                                          if fail_node else "CUDA out of memory")}]]},
                             "outputs": {}}
         return
     with LOCK:
