@@ -149,7 +149,8 @@ def stream(cmd: list[str], task: Task, cwd: str | None = None,
     """
     task.log("$ " + " ".join(cmd))
     proc = subprocess.Popen(cmd, cwd=cwd, stdout=subprocess.PIPE,
-                            stderr=subprocess.STDOUT, text=True, bufsize=0)
+                            stderr=subprocess.STDOUT, text=True, bufsize=0,
+                            encoding="utf-8", errors="replace")
     assert proc.stdout
     state: dict = {}
     last_shown = 0.0
@@ -247,7 +248,8 @@ def same_install(comfy_dir: str, engine_root: str) -> bool:
 
 
 def dependencies(cfg: dict, listed: list[str] | None = None,
-                 engine_root: str = "", fresh: bool = False) -> list[dict]:
+                 engine_root: str = "", fresh: bool = False,
+                 engine_note: str = "") -> list[dict]:
     """What the machine has. `listed` is the checkpoints ComfyUI itself reports,
     or None when it could not be asked — it is the only way this report can tell
     "the file is missing" apart from "the engine cannot see the file"."""
@@ -396,8 +398,12 @@ def dependencies(cfg: dict, listed: list[str] | None = None,
         items.append({"id": "engine", "label": "Engine", "state": "ok",
                       "detail": cfg["comfy_url"] + where, "action": None})
     else:
+        # "Not answering" is where this row used to stop, which reads the
+        # same whether nothing has been started yet or the engine was started
+        # and died thirty seconds ago. engine_note carries the second case.
         items.append({"id": "engine", "label": "Engine", "state": "missing",
-                      "detail": "ComfyUI is not answering.", "action": "start"})
+                      "detail": engine_note or "ComfyUI is not answering.",
+                      "action": "start"})
 
     for it in items:
         it["os"] = sysname

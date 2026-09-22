@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 import requests
@@ -19,6 +20,7 @@ sys.path.insert(0, str(HERE))
 sys.path.insert(0, str(HERE.parent))
 
 import bootstrap  # noqa: E402  (the app's own, for reading pids off a port)
+import manager  # noqa: E402
 from harness import (Suite, Workspace, comfy, fake_install,  # noqa: E402
                      fake_weights, free_port, port_squatter, studio,
                      supervised_comfy, wait_for)
@@ -190,6 +192,55 @@ def run(slow: bool = False) -> Suite:
             s.check("but a file that is genuinely missing is not called stale",
                     st.get("stale_models") is False and st["missing_models"],
                     str(st["missing_models"]))
+
+    # -- the engine console must survive what the engine prints -------------
+    # Windows reads a child through the locale encoding (cp1252), where the
+    # partial-block characters every progress bar draws — U+258D, U+258F — are
+    # undefined bytes and raise. That killed the reader thread outright: the
+    # console froze mid-start with no error, and the Engine row went on saying
+    # "not answering" whether the engine had died or was running perfectly.
+    with Workspace() as ws:
+        (ws / "main.py").write_text(
+            "import sys\n"
+            "out = sys.stdout.buffer\n"
+            "out.write('\\x1b[32m[INFO]\\x1b[0m setup plugin alembic\\n'"
+            ".encode('utf-8'))\n"
+            "out.write('loading \\u258d\\u258f \\u23f3 caf\\u00e9\\n'"
+            ".encode('utf-8'))\n"
+            "out.write('RuntimeError: CUDA out of memory\\n'.encode('utf-8'))\n"
+            "out.flush()\n"
+            "raise SystemExit(3)\n")
+        proc = bootstrap.ComfyProcess()
+        proc.start(sys.executable, ws, free_port(), bootstrap.Progress())
+        for _ in range(100):
+            if proc.exit_code is not None:
+                break
+            time.sleep(0.1)
+        console = proc.tail(20)
+        s.check("what the engine prints reaches the console intact",
+                any("caf\u00e9" in ln and "\u258d" in ln for ln in console),
+                str(console)[:160])
+        s.check("its colour codes do not reach the console as text",
+                not any("\x1b" in ln or "[32m" in ln for ln in console),
+                str(console)[:160])
+        s.check("the line naming the cause is still there",
+                any("CUDA out of memory" in ln for ln in console),
+                str(console)[:160])
+        s.check("an engine that dies says so, with its exit code",
+                proc.exit_code == 3
+                and any("exit code 3" in ln for ln in console),
+                f"exit_code={proc.exit_code} {str(console)[-120:]}")
+
+    # -- and the Engine row says which silence this is ----------------------
+    s.check("a dead engine is not reported as one never started",
+            "stopped on its own" in
+            manager.dependencies({**bootstrap.DEFAULT_CONFIG},
+                                 engine_note="ComfyUI started, then stopped "
+                                             "on its own (exit code 3).")
+            [-1]["detail"])
+    s.check("and with nothing started, the plain message stands",
+            manager.dependencies({**bootstrap.DEFAULT_CONFIG})[-1]["detail"]
+            == "ComfyUI is not answering.")
 
     # -- an optional model must not take every song away --------------------
     # The cover encoder is fetched by default but only Cover mode ever reads

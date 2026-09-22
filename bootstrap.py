@@ -225,6 +225,12 @@ class Progress:
 # python / git discovery
 # --------------------------------------------------------------------------- #
 def _run(cmd: list[str], **kw) -> subprocess.CompletedProcess:
+    # Decode as UTF-8 and never raise on a stray byte. text=True alone reads
+    # the child through the locale encoding, which on a Windows console is
+    # cp1252: the first non-Latin-1 byte a tool prints then ends the read with
+    # a UnicodeDecodeError instead of returning its output.
+    kw.setdefault("encoding", "utf-8")
+    kw.setdefault("errors", "replace")
     return subprocess.run(cmd, capture_output=True, text=True, **kw)
 
 
@@ -438,10 +444,23 @@ def download(url: str, dest: Path, prog: Progress, key: str,
 # --------------------------------------------------------------------------- #
 # ComfyUI process
 # --------------------------------------------------------------------------- #
+# ComfyUI colours its output. Left in, the escapes reach the Engine console as
+# literal "[32m[INFO][0m" noise around every line the engine prints.
+_ANSI = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
+
+
+def strip_ansi(text: str) -> str:
+    return _ANSI.sub("", text)
+
+
 class ComfyProcess:
     def __init__(self) -> None:
         self.proc: subprocess.Popen | None = None
         self.lines: list[str] = []
+        # What the last managed engine exited with, once it has. None while one
+        # is running, and the difference between "still starting" and "it died"
+        # — which the Engine page had no way to tell apart.
+        self.exit_code: int | None = None
         self._lock = threading.Lock()
 
     def note(self, msg: str) -> None:
@@ -467,6 +486,7 @@ class ComfyProcess:
         that cannot start — never a reason the whole app fails to boot."""
         if self.alive():
             return
+        self.exit_code = None
         if not (comfy_dir / "main.py").exists():
             raise RuntimeError(
                 f"There is no ComfyUI at {comfy_dir} any more — the folder "
@@ -489,25 +509,55 @@ class ComfyProcess:
             self.proc = subprocess.Popen(
                 cmd, cwd=str(comfy_dir), stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT, text=True, bufsize=1,
+                encoding="utf-8", errors="replace",
                 creationflags=creation,
             )
         except OSError as exc:
             raise RuntimeError(
                 f"ComfyUI could not be started with {python} — {exc}. "
                 "Run setup again from Settings.") from exc
-        threading.Thread(target=self._pump, args=(prog,), daemon=True).start()
+        threading.Thread(target=self._pump, args=(self.proc, prog),
+                         daemon=True).start()
 
-    def _pump(self, prog: Progress) -> None:
-        assert self.proc and self.proc.stdout
-        for line in self.proc.stdout:
-            line = line.rstrip()
-            with self._lock:
-                self.lines.append(line)
-                if len(self.lines) > 2000:
-                    del self.lines[:1000]
-            if any(k in line for k in ("Error", "Traceback", "error:",
-                                       "Starting server", "To see the GUI")):
-                prog.log(f"ComfyUI: {line}")
+    def _pump(self, proc: subprocess.Popen, prog: Progress) -> None:
+        """Copy the engine's output into the console until it stops.
+
+        The process is passed in rather than read off self, so a restart that
+        replaces it cannot make this thread narrate the wrong engine.
+        """
+        try:
+            assert proc.stdout
+            for line in proc.stdout:
+                line = strip_ansi(line.rstrip())
+                with self._lock:
+                    self.lines.append(line)
+                    if len(self.lines) > 2000:
+                        del self.lines[:1000]
+                if any(k in line for k in ("Error", "Traceback", "error:",
+                                           "Starting server", "To see the GUI")):
+                    prog.log(f"ComfyUI: {line}")
+        except Exception as exc:  # noqa: BLE001
+            # Reading the engine is not the engine failing, and a reader that
+            # dies quietly is worse than one that says so: the console simply
+            # stops mid-start and the page goes on saying "not answering"
+            # while ComfyUI may still be running perfectly well.
+            self.note(f"Lost the engine's output ({type(exc).__name__}: {exc}). "
+                      "It may still be starting — the console stops here, the "
+                      "engine does not.")
+        # Its output has ended, so it is on its way out. Say what it came to.
+        try:
+            code = proc.wait(timeout=30)
+        except Exception:  # noqa: BLE001
+            return
+        if self.proc is not proc:
+            return                        # already replaced by a restart
+        self.exit_code = code
+        if code == 0:
+            self.note("ComfyUI exited normally (code 0) without being asked to.")
+        else:
+            self.note(f"ComfyUI stopped on its own, exit code {code}. "
+                      "The reason is the last thing it printed above.")
+        prog.log(f"ComfyUI exited with code {code}.")
 
     def tail(self, n: int = 40) -> list[str]:
         with self._lock:
@@ -1125,7 +1175,8 @@ def _pip(python: Path | str, args: list[str], prog: Progress,
         cmd += _pip_raw_progress(python)
     prog.log("pip " + " ".join(args[:4]))
     proc = subprocess.Popen(cmd, stdout=subprocess.PIPE,
-                            stderr=subprocess.STDOUT, text=True, bufsize=0)
+                            stderr=subprocess.STDOUT, text=True, bufsize=0,
+                            encoding="utf-8", errors="replace")
     assert proc.stdout
 
     state: dict = {}
