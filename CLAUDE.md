@@ -123,6 +123,23 @@
     15-minute ceiling for every Auto song makes the node allocate for a
     quarter of an hour up front, which is where it has been seen to fall over.
 
+22. **Every child process is read as UTF-8, with `errors="replace"`.**
+    `text=True` alone decodes through the locale encoding, which on a Windows
+    console is cp1252 — where the partial blocks a progress bar draws
+    (`U+258D`, `U+258F`), and `U+23F3`, are undefined bytes that raise. The
+    read then dies inside the loop, and because that loop is a daemon thread
+    nothing surfaces it: the Engine console freezes mid-start with no error,
+    while the engine itself may be running perfectly. Four readers need this —
+    `ComfyProcess.start`, `_pip`, `manager.stream` and `_run`.
+
+23. **An engine that stops says so.** `_pump()` ends when the process's output
+    does, so it waits for the exit code and writes it into the same console.
+    Without that the log simply stops, and a crash looks exactly like a slow
+    first start for ever. `engine_note()` carries the same distinction to the
+    Engine row, which otherwise reports "ComfyUI is not answering" whether
+    nothing was ever started or it died thirty seconds ago. Strip ANSI on the
+    way in, or ComfyUI's colours arrive as literal `[32m[INFO][0m`.
+
 ## Validation gate — run after any edit
 
 ```bash
@@ -139,14 +156,14 @@ node --check /tmp/app.js
 A missing function declaration in the inline script kills all interactivity
 silently — `node --check` is not optional.
 
-`python tests/run.py` runs that gate and everything else (511 checks, about
+`python tests/run.py` runs that gate and everything else (517 checks, about
 three minutes); `python tests/run.py gate` is just the block above. Run the
 whole suite before pushing. Tests take their own port and their own
 `YUE_STUDIO_DATA` directory, so they never touch a real library. Four of them
 need `ffmpeg` on PATH and fail without it — that is the machine, not the code.
 The last 71 are the browser group and need Playwright (`pip install -r
 requirements-dev.txt && python -m playwright install chromium`); without it
-that group steps aside and the run stops at 440, which is a short count and
+that group steps aside and the run stops at 446, which is a short count and
 not a pass to compare against.
 
 `python tests/run.py engine` is the group that owns real ComfyUI processes:

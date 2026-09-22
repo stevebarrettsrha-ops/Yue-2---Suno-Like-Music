@@ -1293,7 +1293,7 @@ def api_deps():
     engine_root = client.engine_root() if online else ""
     fresh = request.args.get("fresh") == "1"
     return jsonify({"items": manager.dependencies(cfg, listed, engine_root,
-                                                  fresh),
+                                                  fresh, engine_note()),
                     "os": __import__("platform").system(),
                     "torch_index": cfg.get("torch_index", "")})
 
@@ -1420,6 +1420,24 @@ def api_hf_delete():
 
 
 # --------------------------------------------------------------------------- #
+def engine_note() -> str:
+    """Why the address is silent, when YuE Studio started the engine itself.
+
+    A managed engine that exited is a different problem from one that was
+    never started, and the Engine row cannot tell them apart on its own: both
+    are simply nothing answering the port. Saying which one it is turns a
+    dead end into the one place worth looking — the console above it, which
+    now ends with what the engine said on its way out.
+    """
+    if comfy_proc.alive():
+        return "ComfyUI was started and is still loading — give it a moment."
+    code = comfy_proc.exit_code
+    if code is None:
+        return ""
+    return (f"ComfyUI started, then stopped on its own (exit code {code}). "
+            "The Engine console below ends with the reason.")
+
+
 def engine_trouble() -> list[str]:
     """Why the engine already answering is no use as it stands, or [].
 
