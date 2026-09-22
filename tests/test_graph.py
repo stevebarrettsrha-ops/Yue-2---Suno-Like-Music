@@ -182,6 +182,31 @@ def run(slow: bool = False) -> Suite:
                          lambda: ComfyClient(none.url).build_prompt({"style": "x"}),
                          ComfyError, "start it again")
 
+        # -- either audio decoder will do -----------------------------------
+        # build_prompt() takes whichever of the two this ComfyUI has, so
+        # demanding the tiled one declared an engine that renders songs
+        # perfectly well unable to run YuE2 — ready stayed False and Create
+        # only ever reopened Setup.
+        no_tiled = without("VAEDecodeAudioTiled")
+        b = no_tiled.build_prompt({"style": "x", "lyrics": "y"})
+        s.check("a ComfyUI with only the plain decoder is still supported",
+                b["decode"] == "VAEDecodeAudio")
+        try:
+            no_tiled.queue(b["prompt"])
+            s.check("and its prompt is accepted", True)
+        except ComfyError as exc:
+            s.check("and its prompt is accepted", False, str(exc)[:80])
+
+        only_tiled = without("VAEDecodeAudio")
+        s.check("asking for untiled output on an engine without it still decodes",
+                only_tiled.build_prompt({"style": "x", "tiled_decode": False})
+                ["decode"] == "VAEDecodeAudioTiled")
+
+        s.fails_with("a ComfyUI with neither decoder says so",
+                     lambda: without("VAEDecodeAudioTiled", "VAEDecodeAudio")
+                     .build_prompt({"style": "x"}),
+                     ComfyError, "VAEDecodeAudioTiled or VAEDecodeAudio")
+
         # -- PreviewAny is a nicety, never a requirement --------------------
         no_preview = without("PreviewAny")
         b = no_preview.build_prompt({"style": "x", "lyrics": "y"})

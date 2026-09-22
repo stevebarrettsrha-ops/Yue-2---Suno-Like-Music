@@ -19,7 +19,13 @@ from pathlib import Path
 
 import requests
 
-import bootstrap
+# The app's own modules live a directory up. Put that on the path here rather
+# than relying on whichever test module happened to be imported first: without
+# it a group that only adds tests/ — `python tests/run.py ui` — dies on this
+# import before a single check runs.
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+import bootstrap                                    # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
 MOCK = Path(__file__).resolve().parent / "mock_comfy.py"
@@ -133,14 +139,32 @@ def comfy(delay: float = 2.0, **env) -> Server:
                   env={"MOCK_DELAY": str(delay), **env})
 
 
+def safetensors_stub(path: Path, size: int) -> None:
+    """A real, complete safetensors file of exactly `size` bytes.
+
+    Completeness is judged from the header a safetensors file carries about
+    itself, so a block of zeros no longer stands in for a model — it has no
+    header and reads as the truncated download it looks like. This writes a
+    genuine one (8-byte length, JSON naming one tensor, then its data) and
+    leaves the body sparse, so the file reports gigabytes without consuming
+    them.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    head_len = 256                       # fixed, so the arithmetic closes
+    count = size - 8 - head_len
+    meta = ('{"t":{"dtype":"U8","shape":[%d],"data_offsets":[0,%d]}}'
+            % (count, count))
+    head = meta.encode() + b" " * (head_len - len(meta))   # JSON ignores the pad
+    with path.open("wb") as handle:
+        handle.write(len(head).to_bytes(8, "little"))
+        handle.write(head)
+        handle.truncate(size)
+
+
 def fake_weights(models_dir: Path) -> None:
     """Drop the model files where missing_models() looks for them."""
     for rel, _url, size, _required in bootstrap.MODELS:
-        path = models_dir / rel
-        path.parent.mkdir(parents=True, exist_ok=True)
-        # Sparse: reports the realistic size without consuming gigabytes.
-        with path.open("wb") as handle:
-            handle.truncate(size)
+        safetensors_stub(models_dir / rel, size)
 
 
 def fake_install(root: Path, stale_first_boot: bool = False) -> Path:

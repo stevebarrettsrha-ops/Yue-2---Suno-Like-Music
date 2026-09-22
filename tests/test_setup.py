@@ -15,7 +15,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import bootstrap                                   # noqa: E402
 import manager                                     # noqa: E402
-from harness import Suite, Workspace, free_port    # noqa: E402
+from harness import (Suite, Workspace, free_port,  # noqa: E402
+                     safetensors_stub)
 
 # A stand-in interpreter: answers the probes find_python and existing_python run.
 STUB = """#!/bin/sh
@@ -151,8 +152,7 @@ def run(slow: bool = False) -> Suite:
         for folder in ("checkpoints", "audio_encoders"):
             (models / folder).mkdir(parents=True)
         for rel, _u, size, _r in bootstrap.MODELS:
-            with (models / rel).open("wb") as handle:
-                handle.truncate(size)
+            safetensors_stub(models / rel, size)
         cfg = {**bootstrap.DEFAULT_CONFIG, "models_dir": str(models),
                "comfy_url": "http://127.0.0.1:1"}
 
@@ -170,10 +170,33 @@ def run(slow: bool = False) -> Suite:
                 models_row(None)["state"] == "ok")
 
         checkpoint = models / bootstrap.MODELS[0][0]
+        listed = bootstrap.MODELS[0][2]
+
         checkpoint.write_bytes(b"partial download")
         s.check("a truncated checkpoint is missing, not generation-ready",
                 Path(bootstrap.missing_models(models, cfg)[0][0]).name
                 == checkpoint.name)
+
+        # Completeness comes from the file's own header, so it stays right
+        # whichever way the catalogue's rounded figure is wrong. Getting this
+        # backwards is not a cosmetic matter: a model wrongly called missing
+        # leaves /api/status ready=False for ever, and the Create button opens
+        # Setup instead of making a song.
+        safetensors_stub(checkpoint, listed)
+        s.check("a complete checkpoint is present",
+                not bootstrap.missing_models(models, cfg))
+
+        safetensors_stub(checkpoint, listed)
+        with checkpoint.open("r+b") as handle:
+            handle.truncate(int(listed * 0.96))
+        s.check("a download cut off at 96% is still caught",
+                Path(bootstrap.missing_models(models, cfg)[0][0]).name
+                == checkpoint.name)
+
+        safetensors_stub(checkpoint, int(listed * 0.7))
+        s.check("a complete model smaller than the catalogue guess is present",
+                not bootstrap.missing_models(models, cfg),
+                "a stale size in MODELS must not make a real model unusable")
 
     # -- the port answered by a ComfyUI we are not managing ------------------
     s.check("the same folder is the same install",
@@ -444,6 +467,50 @@ def run(slow: bool = False) -> Suite:
                     not percentages or max(percentages) >= 99.9,
                     f"peaked at {max(percentages) if percentages else 0:.1f}%")
         srv.shutdown()
+
+    # -- a transfer that stops short must not look finished -----------------
+    port = free_port()
+    whole = b"m" * 8_000_000
+
+    class CutOff(BaseHTTPRequestHandler):
+        def log_message(self, *a): pass
+        def do_GET(self):
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(whole)))
+            self.end_headers()
+            # Declares the whole file, sends a third of it, then hangs up.
+            try:
+                self.wfile.write(whole[:3_500_000])
+                self.wfile.flush()
+            except OSError:
+                pass
+            self.close_connection = True
+
+    srv = ThreadingHTTPServer(("127.0.0.1", port), CutOff)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    with Workspace() as root:
+        for who, call in (("setup", lambda d: bootstrap.download(
+                               f"http://127.0.0.1:{port}/f", d,
+                               bootstrap.Progress(), "models", "f")),
+                          ("the models page", lambda d: manager._stream_download(
+                               f"http://127.0.0.1:{port}/f", d,
+                               manager.Task("download", "f"), {}))):
+            dest = root / f"cut-{who}.safetensors"
+            part = dest.with_suffix(dest.suffix + ".part")
+            try:
+                call(dest)
+            except Exception:
+                pass
+            s.check(f"{who}: a cut-off download never becomes the real file",
+                    not dest.exists(),
+                    "a truncated model under the real name reads as ready "
+                    "and fails later inside the YuE nodes")
+            # Whole chunks that landed are kept, so the Range header
+            # restarts from them instead of from zero.
+            s.check(f"{who}: what arrived is kept for the resume",
+                    part.exists() and 0 < part.stat().st_size < len(whole),
+                    f"part is {part.stat().st_size if part.exists() else 'absent'}")
+    srv.shutdown()
 
     # -- a .part that is already the whole file ----------------------------
     port = free_port()

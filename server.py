@@ -467,6 +467,7 @@ def run_job(job_id: str, params: dict, built: dict | None = None) -> None:
         last_stage = ""
         unreachable_since = 0.0
         abc_fallback_used = False
+        music_fallback_used = False
         while True:
             time.sleep(1.5)
             # Read the flag under the lock and act outside it: jobs_lock is a
@@ -530,6 +531,33 @@ def run_job(job_id: str, params: dict, built: dict | None = None) -> None:
                     fallback = {**params, "use_abc": False,
                                 "seed": built["seed"]}
                     built = client.build_prompt(fallback)
+                    prompt_id = client.queue(built["prompt"])
+                    set_state(prompt_id=prompt_id)
+                    started = time.time()
+                    unreachable_since = 0.0
+                    continue
+                can_retry_music = (
+                    not music_fallback_used
+                    and err.lower().startswith("yue2generatemusic:")
+                    and ("errno 22" in err.lower()
+                         or "invalid argument" in err.lower()))
+                if can_retry_music:
+                    # A schema-valid value is not necessarily usable by every
+                    # backend. In particular, 15-minute Auto requests and
+                    # edge sampling values have produced OSError 22 on the
+                    # Windows native node. Retry once with the reference
+                    # workflow's conservative values and direct generation.
+                    music_fallback_used = True
+                    set_state(stage="Music generator rejected the options — "
+                                    "retrying in compatibility mode",
+                              pct=6, warning=err)
+                    params = {**params, "use_abc": False, "abc": "",
+                              "duration": min(int(params.get("duration") or 180),
+                                              180),
+                              "mode": "melody", "top_p": 0.95,
+                              "top_k": 100, "repetition_penalty": 1.2,
+                              "seed": built["seed"]}
+                    built = client.build_prompt(params)
                     prompt_id = client.queue(built["prompt"])
                     set_state(prompt_id=prompt_id)
                     started = time.time()
@@ -647,8 +675,16 @@ def api_status():
     online = comfy_online(cfg["comfy_url"])
     models_dir = Path(cfg["models_dir"]) if cfg.get("models_dir") else None
     missing = []
+    # Only the weights a plain text-to-song needs can stand between someone
+    # and the Create button. The cover encoder is downloaded by default but
+    # is wanted by Cover mode alone, which the page already greys out on
+    # has_cover_model — so counting it here took songs away over a model that
+    # no song being asked for would have touched.
+    missing_required = []
     if models_dir and models_dir.is_dir():
-        missing = [Path(m[0]).name for m in bootstrap.missing_models(models_dir, cfg)]
+        absent = bootstrap.missing_models(models_dir, cfg)
+        missing = [Path(m[0]).name for m in absent]
+        missing_required = [Path(m[0]).name for m in absent if m[3]]
     payload = {
         # Provisional until the live engine has proved that it exposes the
         # nodes and checkpoint needed to construct a generation graph.
@@ -656,6 +692,7 @@ def api_status():
         "comfy_online": online,
         "setup_complete": bool(cfg.get("setup_complete")),
         "missing_models": missing,
+        "missing_required_models": missing_required,
         "config": {k: cfg.get(k) for k in
                    ("comfy_url", "comfy_dir", "models_dir", "managed",
                     "auto_start_comfy", "download_cover_model", "download_bf16",
@@ -673,6 +710,12 @@ def api_status():
             payload["samplers"], payload["schedulers"] = client.samplers()
             payload["formats"] = available_formats(client.save_formats())
             payload["max_duration"] = client.duration_limit()
+            # What Auto asks for. Distinct from the hard ceiling: sending the
+            # engine's absolute 15-minute limit for every Auto song makes it
+            # allocate for a quarter-hour up front, which is where the native
+            # node has been seen to fall over. The page falls back to 180s
+            # when this is absent, so it must actually be sent.
+            payload["recommended_duration"] = client.duration_default()
         except Exception as exc:  # ComfyUI up but too old / still loading
             payload["schema_error"] = str(exc)
         # The two silent "nothing works" states, named rather than left for
@@ -698,7 +741,7 @@ def api_status():
             root and cfg.get("comfy_dir")
             and not manager.same_install(cfg["comfy_dir"], root))
         payload["ready"] = bool(
-            cfg.get("setup_complete") and not missing
+            cfg.get("setup_complete") and not missing_required
             and not payload.get("schema_error")
             and not payload.get("stale_models")
             and not payload.get("engine_mismatch"))

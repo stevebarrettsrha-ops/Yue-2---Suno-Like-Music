@@ -27,7 +27,12 @@
    optional in `_PACKAGES` and the user is told to restart.
 5. **Model downloads are resumable.** Stream to `<name>.part`, `Range` header on
    retry, atomic `replace()` on completion. Never write straight to the final
-   filename.
+   filename. **And never `replace()` a transfer that stopped short** — check
+   what arrived against the `Content-Length` the server declared first. A cut
+   connection can end `iter_content()` without raising, and promoting that
+   leaves a truncated multi-gigabyte model under the real name, where it looks
+   downloaded and fails much later inside the YuE nodes as `[Errno 22] Invalid
+   argument`. Leaving it as `.part` is what lets the `Range` retry finish it.
 6. **Never touch an existing ComfyUI's Python environment.** Dependency install
    runs only in managed mode, only inside `comfy-venv`.
 7. **All HuggingFace work goes through the front end.** No CLI step, no manual
@@ -87,6 +92,37 @@
     custom-node packs that only load at startup.) `engine_trouble()` lists
     only what a restart actually cures.
 
+18. **A model is complete when its own header says so, never when it clears a
+    size in `MODELS`.** `safetensors_size()` reads the length a safetensors
+    file declares for itself (u64 header length, then JSON whose
+    `data_offsets` end at the true total), so a partial download is caught
+    exactly — its header is intact, and what it promises is missing. The
+    figures in `MODELS` are rounded approximations kept for progress
+    read-outs; gating on one (the old check wanted 95% of it) turns a single
+    stale number into a model that can never be seen as present. That is not
+    cosmetic: `missing_models()` feeds `ready`, and a false "missing" leaves
+    `/api/status` `ready: false` for ever, which makes **Create** a button
+    that only reopens Setup. Songs stop, and the page blames the download.
+
+19. **Only *required* weights gate `ready`.** `missing_required_models` is the
+    list that clears the Create button, not `missing_models`. The cover
+    encoder is fetched by default but read by Cover mode alone, which the page
+    already greys out on `has_cover_model` — so counting it took every song
+    away over a model no ordinary song would have touched.
+
+20. **The graph needs an audio decoder, not a particular one.**
+    `DECODE_NODES` is a preference order: `build_prompt()` takes the tiled
+    decoder when it is there and the plain one when it is not, either way
+    round. Naming `VAEDecodeAudioTiled` in `REQUIRED_NODES` declared a ComfyUI
+    that renders songs perfectly well unable to run YuE2 at all.
+
+21. **`/api/status` sends `recommended_duration`.** The page reads it for
+    **Auto** and falls back to 180s when it is absent, so dropping it silently
+    changes what every Auto song asks for. It is the engine's own tested
+    default and is deliberately *not* `max_duration` — sending the absolute
+    15-minute ceiling for every Auto song makes the node allocate for a
+    quarter of an hour up front, which is where it has been seen to fall over.
+
 ## Validation gate — run after any edit
 
 ```bash
@@ -103,11 +139,15 @@ node --check /tmp/app.js
 A missing function declaration in the inline script kills all interactivity
 silently — `node --check` is not optional.
 
-`python tests/run.py` runs that gate and everything else (448 checks, about
+`python tests/run.py` runs that gate and everything else (511 checks, about
 three minutes); `python tests/run.py gate` is just the block above. Run the
 whole suite before pushing. Tests take their own port and their own
 `YUE_STUDIO_DATA` directory, so they never touch a real library. Four of them
 need `ffmpeg` on PATH and fail without it — that is the machine, not the code.
+The last 71 are the browser group and need Playwright (`pip install -r
+requirements-dev.txt && python -m playwright install chromium`); without it
+that group steps aside and the run stops at 440, which is a short count and
+not a pass to compare against.
 
 `python tests/run.py engine` is the group that owns real ComfyUI processes:
 takeover, restart, the stale scan and what a launch does to an engine that is
@@ -129,8 +169,9 @@ workflow wires KSampler's negative to the same conditioning as positive, so an
 
 ComfyUI **v0.35.0+** (native YuE2 nodes). Required node classes:
 `YuE2GenerateMusic`, `YuE2GenerateABC`, `EmptyYuE2LatentAudio`,
-`SaveAudioAdvanced`, plus `SheetSage2AudioToABC` and `AudioEncoderLoader` for
-cover mode.
+`SaveAudioAdvanced`, and either `VAEDecodeAudioTiled` or `VAEDecodeAudio`
+(rule 20), plus `SheetSage2AudioToABC` and `AudioEncoderLoader` for cover
+mode.
 
 Models live at `Comfy-Org/YuE2` on HuggingFace. URLs are in `bootstrap.MODELS`.
 

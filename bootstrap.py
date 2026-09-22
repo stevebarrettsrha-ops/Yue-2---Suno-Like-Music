@@ -401,7 +401,12 @@ def download(url: str, dest: Path, prog: Progress, key: str,
         mode = "ab" if resuming else "wb"
         if not resuming:
             have = 0
-        total = int(r.headers.get("Content-Length", 0)) + have or expected
+        served = int(r.headers.get("Content-Length", 0))
+        # What the server says the finished file comes to. Only this is worth
+        # checking the result against; `expected` is a rounded catalogue guess
+        # and is used for the progress read-out alone.
+        declared = have + served if served else 0
+        total = declared or expected
         got = have
         last = 0.0
         with open(part, mode) as fh:
@@ -416,6 +421,16 @@ def download(url: str, dest: Path, prog: Progress, key: str,
                     pct = (got / total * 100) if total else 0
                     prog.detail(key, f"{label} — {got/1e9:.2f} GB "
                                      f"of {total/1e9:.2f} GB ({pct:.0f}%)")
+    if declared and got < declared:
+        # A cut connection can end iter_content() without raising. Promoting
+        # the part file here is what puts a truncated multi-gigabyte model at
+        # the real name, where ComfyUI reports only "[Errno 22] Invalid
+        # argument" and nothing points back to the download. Leave it as
+        # <name>.part instead: the Range header above resumes from exactly
+        # this byte the next time setup runs.
+        raise OSError(
+            f"{dest.name} stopped {(declared - got)/1e6:.0f} MB short of "
+            f"{declared/1e9:.2f} GB. Run setup again to resume it.")
     part.replace(dest)
     prog.log(f"Downloaded {dest.name} ({dest.stat().st_size/1e9:.2f} GB)")
 
@@ -748,29 +763,94 @@ def model_paths_file(comfy_dir: Path, models_dir: Path) -> Path | None:
     return path
 
 
-def missing_models(models_dir: Path, cfg: dict) -> list[tuple]:
-    """Required downloads that are absent or obviously incomplete.
+def safetensors_size(path: Path) -> int | None:
+    """The total byte length a .safetensors file declares for itself.
+
+    The format opens with a little-endian u64 giving the length of a JSON
+    header, and that header lists every tensor with its ``data_offsets`` into
+    the block that follows. The end of the last tensor is therefore the exact
+    size the file ought to be, read from the file itself — which stays correct
+    however far a catalogue's rounded figure drifts from what the repository
+    actually ships. Returns None when this is not a safetensors file, or when
+    it is damaged so early that the header cannot be parsed.
+    """
+    try:
+        with open(path, "rb") as fh:
+            raw = fh.read(8)
+            if len(raw) < 8:
+                return None
+            head = int.from_bytes(raw, "little")
+            # A real header is kilobytes to a few megabytes of JSON. A wild
+            # number here means the first eight bytes are not a length at all.
+            if not 0 < head <= 100_000_000:
+                return None
+            body = fh.read(head)
+        if len(body) < head:
+            return None
+        meta = json.loads(body.decode("utf-8"))
+        if not isinstance(meta, dict):
+            return None
+    except (OSError, ValueError, UnicodeDecodeError):
+        return None
+    end = 0
+    for name, spec in meta.items():
+        if name == "__metadata__" or not isinstance(spec, dict):
+            continue
+        offsets = spec.get("data_offsets")
+        if isinstance(offsets, (list, tuple)) and len(offsets) == 2:
+            try:
+                end = max(end, int(offsets[1]))
+            except (TypeError, ValueError):
+                continue
+    # A header that parsed but named no tensor data still fixes a floor: the
+    # header itself has to be all there. Erring low is the safe direction —
+    # it can only ever call a real file complete, never call a complete file
+    # missing and take the Create button away over it.
+    return 8 + head + end
+
+
+def model_incomplete(path: Path, expected: int = 0) -> bool:
+    """True when a model file is absent or is provably a partial download.
 
     Older releases treated any directory entry as a complete multi-gigabyte
-    model. A cancelled/manual download could therefore make setup green and
-    reach the YuE nodes, where Windows reports only ``[Errno 22] Invalid
-    argument``. The catalogue sizes are rounded, so allow five percent of
-    packaging variation while rejecting partial files.
+    model. A cancelled or hand-copied download could therefore make setup
+    green and reach the YuE nodes, where Windows reports only ``[Errno 22]
+    Invalid argument``.
+
+    Completeness is read out of the file wherever it can be. A truncated
+    download still carries an intact header — the header is the first thing
+    written — so the length it declares is exactly what catches it, with no
+    catalogue figure involved. That matters because the figures in ``MODELS``
+    are rounded approximations: gating on one directly (the old check wanted
+    95% of it) turns a single stale number into a model that can never be
+    seen as present, and a model reported missing takes the Create button
+    away entirely and sends people to re-fetch gigabytes they already have.
+    The catalogue is used only as a coarse floor for a file that cannot
+    describe itself, where the job is just to reject an error page or an
+    empty stub rather than to second-guess a real model's size.
     """
+    try:
+        if not path.is_file():
+            return True
+        actual = path.stat().st_size
+    except OSError:
+        return True
+    declared = safetensors_size(path)
+    if declared:
+        return actual < declared
+    if path.suffix.lower() == ".safetensors":
+        # Named as one but with an unreadable header: too damaged to load.
+        return True
+    return actual < min(expected, 1_000_000) if expected else actual == 0
+
+
+def missing_models(models_dir: Path, cfg: dict) -> list[tuple]:
+    """Required downloads that are absent or obviously incomplete."""
     wanted = [m for m in MODELS if m[3] or
               (m[0].startswith("audio_encoders") and cfg.get("download_cover_model"))]
     if cfg.get("download_bf16"):
         wanted.append(MODEL_BF16)
-    missing = []
-    for model in wanted:
-        path, expected = models_dir / model[0], model[2]
-        try:
-            complete = path.is_file() and path.stat().st_size >= expected * 0.95
-        except OSError:
-            complete = False
-        if not complete:
-            missing.append(model)
-    return missing
+    return [m for m in wanted if model_incomplete(models_dir / m[0], m[2])]
 
 
 def run_setup(cfg: dict, prog: Progress, comfy: ComfyProcess,
