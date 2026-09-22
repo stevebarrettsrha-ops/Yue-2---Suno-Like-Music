@@ -191,6 +191,42 @@ def run(slow: bool = False) -> Suite:
                     st.get("stale_models") is False and st["missing_models"],
                     str(st["missing_models"]))
 
+    # -- an optional model must not take every song away --------------------
+    # The cover encoder is fetched by default but only Cover mode ever reads
+    # it, and the page greys that button out on has_cover_model. Letting its
+    # absence clear "ready" meant a failed 1.4 GB download stopped plain
+    # text-to-song too — the Create button just reopened Setup.
+    with comfy(delay=1) as engine, Workspace() as ws:
+        models = ws / "models"
+        fake_weights(models)
+        (models / bootstrap.MODELS[1][0]).unlink()
+        with studio(engine.url, ws / "data", models_dir=str(models)) as app:
+            st = status(app.url)
+            s.check("a missing cover encoder is still reported",
+                    st["missing_models"] == ["sheetsage2_bf16.safetensors"],
+                    str(st["missing_models"]))
+            s.check("but songs can still be made without it",
+                    st["ready"] is True and st["missing_required_models"] == [],
+                    f"ready={st['ready']} required={st.get('missing_required_models')}")
+            made = requests.post(f"{app.url}/api/generate",
+                                 json={"style": "no cover model here"},
+                                 timeout=30)
+            s.check("and Create actually accepts the song",
+                    made.status_code == 200, str(made.text)[:120])
+
+    # -- the checkpoint, though, is genuinely required ----------------------
+    with comfy(delay=1) as engine, Workspace() as ws:
+        models = ws / "models"
+        fake_weights(models)
+        (models / bootstrap.MODELS[0][0]).unlink()
+        with studio(engine.url, ws / "data", models_dir=str(models)) as app:
+            st = status(app.url)
+            s.check("a missing checkpoint still stops everything",
+                    st["ready"] is False
+                    and st["missing_required_models"]
+                    == ["yue2_3b_int8_convrot.safetensors"],
+                    f"ready={st['ready']} required={st.get('missing_required_models')}")
+
     # -- which install is answering the address -----------------------------
     with comfy(delay=1, MOCK_COMFY_ROOT="/opt/somebody-elses/ComfyUI") as other, \
             Workspace() as ws:

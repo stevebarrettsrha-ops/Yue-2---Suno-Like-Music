@@ -776,6 +776,15 @@ def _stream_download(url: str, dest: Path, task: Task, headers: dict) -> None:
                              detail=f"{got/1e9:.2f} / {total/1e9:.2f} GB · "
                                     f"{speed/1e6:.1f} MB/s · "
                                     f"{int(eta//60)}m {int(eta%60)}s left")
+    if total and got < total:
+        # A dropped connection can end iter_content() without raising. The
+        # part file is kept exactly as it is, because the Range header above
+        # resumes from this byte; promoting it would leave a truncated model
+        # under the real name, looking downloaded and failing only later
+        # inside the YuE nodes.
+        raise RuntimeError(
+            f"{dest.name} stopped {(total - got)/1e6:.0f} MB short of "
+            f"{total/1e9:.2f} GB. Download it again to resume.")
     part.replace(dest)
     task.set(pct=100, detail=f"Saved — {dest.stat().st_size/1e9:.2f} GB")
     task.log(f"Saved to {dest}")

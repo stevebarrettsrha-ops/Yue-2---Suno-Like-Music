@@ -68,17 +68,25 @@ class ComfyClient:
         return merged
 
     # Everything used by a default Create click. Optional branches are checked
-    # when selected (VAEDecodeAudio for untiled output, and the SheetSage nodes
-    # for covers), but the status endpoint must not advertise "Engine ready"
-    # when the ordinary text-to-song graph cannot even be constructed.
+    # when selected (the SheetSage nodes for covers), but the status endpoint
+    # must not advertise "Engine ready" when the ordinary text-to-song graph
+    # cannot even be constructed.
     REQUIRED_NODES = ("CheckpointLoaderSimple", "KSampler", "YuE2GenerateABC",
                       "YuE2GenerateMusic", "EmptyYuE2LatentAudio",
-                      "VAEDecodeAudioTiled", "SaveAudioAdvanced")
+                      "SaveAudioAdvanced")
+    # The graph needs one of these, not a particular one: build_prompt() takes
+    # the tiled decoder when it is there and the plain one when it is not. So
+    # naming the tiled node as required declared a ComfyUI that renders songs
+    # perfectly well unable to run YuE2 at all — which left ready False and
+    # turned Create into a button that only ever reopened Setup.
+    DECODE_NODES = ("VAEDecodeAudioTiled", "VAEDecodeAudio")
 
     def ensure_supported(self) -> None:
         """Fail with the real cause before anything else can mask it."""
         schema = self.schema()
         missing = [n for n in self.REQUIRED_NODES if n not in schema]
+        if not any(n in schema for n in self.DECODE_NODES):
+            missing.append(" or ".join(self.DECODE_NODES))
         if missing:
             raise ComfyError(
                 "This ComfyUI cannot run YuE2 — it is missing "
@@ -485,10 +493,14 @@ class ComfyClient:
             "denoise": {"names": ["denoise"], "value": 1.0},
         })
 
-        decode_class = ("VAEDecodeAudioTiled"
-                        if p.get("tiled_decode", True)
-                        and "VAEDecodeAudioTiled" in self.schema()
-                        else "VAEDecodeAudio")
+        # Preferred first, then whatever this ComfyUI actually has. Asking for
+        # the untiled decoder on an engine that only ships the tiled one used
+        # to raise instead of simply decoding.
+        schema = self.schema()
+        wanted_decode = ("VAEDecodeAudioTiled" if p.get("tiled_decode", True)
+                         else "VAEDecodeAudio")
+        decode_class = next((n for n in (wanted_decode, *self.DECODE_NODES)
+                             if n in schema), wanted_decode)
         decode_wanted = {
             "samples": {"names": ["samples"], "value": ["8", 0], "required": True},
             "vae": {"names": ["vae"], "value": ["15", 2], "required": True},
