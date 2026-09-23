@@ -422,7 +422,7 @@
         </div>
         <div class="modelsel">
           <svg viewBox="0 0 24 24" style="width:14px;height:14px"><path d="M12 3 3 8l9 5 9-5zM3 16l9 5 9-5"/></svg>
-          <select id="ckpt"><option value="">auto</option></select>
+          <select id="ckpt" title="Which song model to load. Auto prefers the int8 checkpoint, which fits on far more cards; pick bf16 by name for the full-precision one."><option value="">auto</option></select>
         </div>
       </div>
 
@@ -762,7 +762,11 @@ const S = {
   view:"home", status:null, tracks:[], jobs:[], localModels:[], playing:null,
   filter:"", libFilter:"", reference:null, count:1, setupCursor:0,
   taskId:null, taskCursor:0, likes:{}, sort:"new", onlyLiked:false,
-  hist:[], histAt:-1, repeat:false, shuffle:false
+  hist:[], histAt:-1, repeat:false, shuffle:false,
+  // The checkpoint the person chose. Held separately from the dropdown
+  // because the dropdown's options come from the engine: on a reload the
+  // saved choice exists before there is any option to select it.
+  wantCkpt:""
 };
 const $ = (id) => document.getElementById(id);
 const api = async (path, opts) => {
@@ -872,6 +876,7 @@ function readOpts() {
     plan:segGet("segPlan"), tiled:segGet("segTiled"),
     durationChoice:picked,
     duration:picked === "auto" ? automatic : Number(picked),
+    ckpt:$("ckpt").value,
     steps:Number($("steps").value),
     topp:Number($("topp").value), rep:Number($("rep").value) };
 }
@@ -894,6 +899,8 @@ function loadDraft() {
   if (o.steps) { $("steps").value = o.steps; $("stepsVal").textContent = o.steps; }
   if (o.topp) { $("topp").value = o.topp; $("toppVal").textContent = (o.topp/100).toFixed(2); }
   if (o.rep) { $("rep").value = o.rep; $("repVal").textContent = (o.rep/100).toFixed(2); }
+  // Applied when the engine's list arrives, which is after this runs.
+  S.wantCkpt = o.ckpt || "";
   lyricsNote();
   const inst = segGet("segVocal") === "instrumental";
   $("lyrics").disabled = inst; $("lyrics").style.opacity = inst ? ".45" : "1";
@@ -1049,6 +1056,15 @@ function reuse(t) {
   if (t.steps) { $("steps").value = t.steps; $("stepsVal").textContent = t.steps; }
   if (t.mode) segSet("segPlan", t.mode);
   if (t.instrumental) segSet("segVocal","instrumental");
+  // The library badges each song INT8 or BF16, so loading a BF16 song's
+  // settings and quietly rendering the next one on int8 is a visible lie.
+  if (t.checkpoint) {
+    S.wantCkpt = t.checkpoint;
+    const sel = $("ckpt");
+    if ([...sel.options].some((o) => o.value === t.checkpoint)) {
+      sel.value = t.checkpoint;
+    }
+  }
   syncChips(); lyricsNote(); saveDraft(); show("create");
   toast("Settings loaded. The seed stays random unless you set it.");
 }
@@ -1745,14 +1761,31 @@ async function refreshStatus() {
   $("engineTag").hidden = !!st.comfy_online;
   $("createLabel").textContent = st.ready ? "Create" : "Set up the engine";
   if (st.checkpoints) {
-    const sel = $("ckpt"), keep = sel.value;
-    sel.innerHTML = '<option value="">auto</option>';
-    st.checkpoints.forEach((c) => {
-      const o = document.createElement("option");
-      o.value = c; o.textContent = c.replace(/\.safetensors$/, "");
-      sel.appendChild(o);
-    });
-    sel.value = keep;
+    const sel = $("ckpt");
+    // S.wantCkpt is the choice that outlives a reload; sel.value is the one
+    // being made right now. A model that is not in the list yet — the engine
+    // restarting, a download just finished — keeps its place in wantCkpt and
+    // is selected on the refresh that first reports it.
+    // This runs on every status poll, so it touches the dropdown only when
+    // the engine's list actually changed. Writing to it on each pass raced
+    // the person using it: switching back to auto could be undone by the
+    // very next poll, which still had the remembered pick and put it back.
+    // While the list stands, the dropdown itself is the truth.
+    const have = [].slice.call(sel.options, 1).map((o) => o.value);
+    const same = have.length === st.checkpoints.length
+      && have.every((v, i) => v === st.checkpoints[i]);
+    if (!same) {
+      const keep = sel.value || S.wantCkpt || "";
+      sel.innerHTML = '<option value="">auto</option>';
+      st.checkpoints.forEach((c) => {
+        const o = document.createElement("option");
+        o.value = c; o.textContent = c.replace(/\.safetensors$/, "");
+        sel.appendChild(o);
+      });
+      // Seeded as the list appears — a reload, or a model that has just
+      // finished downloading and is only now offered.
+      sel.value = keep;
+    }
   }
   // Enabled while a reference is attached even without the cover model, so
   // removing it is never locked out. The label and title live in renderAttach.
@@ -1844,6 +1877,13 @@ function wire() {
     $("format").value));
   $("duration").addEventListener("change", () => {
     store("yue.duration", $("duration").value); saveDraft(); });
+  // Without this the picker did not survive a reload at all: nothing recorded
+  // the change, so the next visit silently went back to auto — and auto means
+  // int8, whichever model the last song was actually made on. Writing the
+  // empty value back matters too, or choosing auto would be undone by the
+  // remembered pick on the next status refresh.
+  $("ckpt").addEventListener("change", () => {
+    S.wantCkpt = $("ckpt").value; saveDraft(); });
   $("btnCount").addEventListener("click", () => {
     S.count = S.count % 4 + 1; $("btnCount").textContent = "×" + S.count; });
   $("btnCreate").addEventListener("click", create);

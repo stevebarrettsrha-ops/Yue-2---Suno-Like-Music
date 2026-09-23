@@ -140,6 +140,20 @@
     nothing was ever started or it died thirty seconds ago. Strip ANSI on the
     way in, or ComfyUI's colours arrive as literal `[32m[INFO][0m`.
 
+24. **The song model is the person's to choose, and the choice sticks.**
+    `#ckpt` on the Create page is a real control, not a display: "auto" means
+    `pick_checkpoint()`, which prefers int8 because it loads on far more
+    cards — so on a machine that has both, auto never reaches bf16 and the
+    only way to the full-precision model is to name it. That makes losing the
+    choice a silent downgrade, which is why it rides in the draft, is restored
+    once the engine's list arrives (the options come from `/api/status`, so
+    they are not there yet when the draft is read), and is what **reuse**
+    loads back — the library badges every song INT8 or BF16, so re-rendering a
+    BF16 song on int8 contradicts the page. The status poll writes to the
+    select **only when the engine's list actually changed**: on every pass it
+    churns the DOM under an open dropdown and can overwrite a choice being
+    made. While the list stands, the dropdown is the truth.
+
 ## Validation gate — run after any edit
 
 ```bash
@@ -156,12 +170,12 @@ node --check /tmp/app.js
 A missing function declaration in the inline script kills all interactivity
 silently — `node --check` is not optional.
 
-`python tests/run.py` runs that gate and everything else (517 checks, about
+`python tests/run.py` runs that gate and everything else (521 checks, about
 three minutes); `python tests/run.py gate` is just the block above. Run the
 whole suite before pushing. Tests take their own port and their own
 `YUE_STUDIO_DATA` directory, so they never touch a real library. Four of them
 need `ffmpeg` on PATH and fail without it — that is the machine, not the code.
-The last 71 are the browser group and need Playwright (`pip install -r
+The last 75 are the browser group and need Playwright (`pip install -r
 requirements-dev.txt && python -m playwright install chromium`); without it
 that group steps aside and the run stops at 446, which is a short count and
 not a pass to compare against.
