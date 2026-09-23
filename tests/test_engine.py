@@ -242,6 +242,38 @@ def run(slow: bool = False) -> Suite:
             manager.dependencies({**bootstrap.DEFAULT_CONFIG})[-1]["detail"]
             == "ComfyUI is not answering.")
 
+    # -- "ready" must not mean "the port answered" --------------------------
+    # A first launch showed Engine ready while ComfyUI was still loading, and
+    # a song made in that window fails inside the nodes for reasons that have
+    # nothing to do with the song.
+    import server                                        # noqa: E402
+    proc = server.comfy_proc
+    was = (proc.proc, proc.serving, proc.started_at)
+    try:
+        class Pretend:
+            def poll(self): return None                  # alive
+        proc.proc, proc.serving = Pretend(), False
+        proc.started_at = time.time()
+        s.check("an engine of ours that has not announced itself is starting",
+                server.engine_starting() is True)
+        s.check("and the Engine row says starting, not just silent",
+                "starting" in server.engine_note().lower(),
+                server.engine_note()[:80])
+        proc.serving = True
+        s.check("once it says it is serving, it is no longer starting",
+                server.engine_starting() is False)
+        # A build whose banner we do not recognise must not hang for ever.
+        proc.serving = False
+        proc.started_at = time.time() - server.STARTING_GRACE - 1
+        s.check("an unrecognised banner stops withholding after the grace",
+                server.engine_starting() is False)
+        # An engine we did not start is not ours to hold back.
+        proc.proc, proc.serving, proc.started_at = None, False, time.time()
+        s.check("an adopted engine is never called starting",
+                server.engine_starting() is False)
+    finally:
+        proc.proc, proc.serving, proc.started_at = was
+
     # -- an optional model must not take every song away --------------------
     # The cover encoder is fetched by default but only Cover mode ever reads
     # it, and the page greys that button out on has_cover_model. Letting its

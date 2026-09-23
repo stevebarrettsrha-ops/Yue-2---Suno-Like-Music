@@ -26,7 +26,7 @@ import manager
 from bootstrap import (ComfyProcess, Progress, clean_url,
                        comfy_online, comfy_port, detect_comfy_dirs,
                        load_config, save_config)
-from comfy import ComfyClient, ComfyError
+from comfy import ComfyClient, ComfyError, explain_failure
 
 DATA_DIR = bootstrap.DATA_DIR          # honours YUE_STUDIO_DATA
 TRACKS_DIR = DATA_DIR / "tracks"
@@ -189,6 +189,23 @@ def read_library() -> list[dict]:
         if not isinstance(items, list):
             return []
         return [i for i in items if isinstance(i, dict) and i.get("id")]
+
+
+def checkpoint_size(name: str) -> int:
+    """Bytes of a checkpoint in the model library, or 0 if it is not found.
+
+    Read off the disk rather than from the catalogue in MODELS, whose figures
+    are rounded and can go stale — the same reason completeness is judged from
+    the file's own header (rule 18).
+    """
+    base = Path(cfg["models_dir"]) if cfg.get("models_dir") else None
+    if not base or not name or "/" in name or "\\" in name:
+        return 0
+    try:
+        path = base / "checkpoints" / name
+        return path.stat().st_size if path.is_file() else 0
+    except OSError:
+        return 0
 
 
 def track_file(item: dict, kind: str = "") -> Path | None:
@@ -563,7 +580,13 @@ def run_job(job_id: str, params: dict, built: dict | None = None) -> None:
                     started = time.time()
                     unreachable_since = 0.0
                     continue
-                set_state(status="error", error=err, stage="Failed")
+                set_state(status="error", stage="Failed",
+                          error=explain_failure(
+                              err, built["ckpt"],
+                              checkpoint_size(built["ckpt"]),
+                              client.vram_total(),
+                              int(params.get("duration") or 0),
+                              music_fallback_used))
                 return
 
             outs = client.outputs(prompt_id, hist)
@@ -740,8 +763,10 @@ def api_status():
         payload["engine_mismatch"] = bool(
             root and cfg.get("comfy_dir")
             and not manager.same_install(cfg["comfy_dir"], root))
+        payload["engine_starting"] = engine_starting()
         payload["ready"] = bool(
             cfg.get("setup_complete") and not missing_required
+            and not payload["engine_starting"]
             and not payload.get("schema_error")
             and not payload.get("stale_models")
             and not payload.get("engine_mismatch"))
@@ -1420,6 +1445,27 @@ def api_hf_delete():
 
 
 # --------------------------------------------------------------------------- #
+# How long to keep withholding "ready" from an engine that has not announced
+# itself. A build that prints a banner we do not recognise must not be held
+# back for ever — past this, answering its port is taken as good enough.
+STARTING_GRACE = 180.0
+
+
+def engine_starting() -> bool:
+    """True while the engine YuE Studio started is still putting itself up.
+
+    Answering /system_stats is not the same as being able to render. The page
+    called an engine ready the moment the port replied, so a first launch
+    showed "Engine ready" while ComfyUI was still loading — and a song made in
+    that window fails inside the nodes for reasons that have nothing to do
+    with the song. ComfyUI says when it is really serving; until it does, and
+    only for a process of ours, this is the honest answer.
+    """
+    return bool(comfy_proc.alive() and not comfy_proc.serving
+                and comfy_proc.started_at
+                and time.time() - comfy_proc.started_at < STARTING_GRACE)
+
+
 def engine_note() -> str:
     """Why the address is silent, when YuE Studio started the engine itself.
 
@@ -1429,6 +1475,9 @@ def engine_note() -> str:
     dead end into the one place worth looking — the console above it, which
     now ends with what the engine said on its way out.
     """
+    if engine_starting():
+        return ("ComfyUI is starting — it has not finished loading yet. "
+                "The Engine console below shows how far it has got.")
     if comfy_proc.alive():
         return "ComfyUI was started and is still loading — give it a moment."
     code = comfy_proc.exit_code

@@ -13,7 +13,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from comfy import ComfyClient, ComfyError          # noqa: E402
+from comfy import ComfyClient, ComfyError, explain_failure          # noqa: E402
 from harness import Suite, comfy                   # noqa: E402
 
 
@@ -217,6 +217,36 @@ def run(slow: bool = False) -> Suite:
             s.check("and that prompt is still accepted", True)
         except ComfyError as exc:
             s.check("and that prompt is still accepted", False, str(exc)[:80])
+
+        # -- an errno nobody can act on is given its cause -----------------
+        # "[Errno 22] Invalid argument" is Windows' answer to several
+        # unrelated refusals, and on its own it sends people to look at their
+        # lyrics, which is never where the fault is.
+        E = "YuE2GenerateMusic: [Errno 22] Invalid argument"
+        GB = 1_000_000_000
+        long_song = explain_failure(E, "yue2_3b_int8_convrot.safetensors",
+                                    4 * GB, 8 * GB, 900)
+        s.check("a 15-minute song is told it is the length",
+                "15:00" in long_song and "Duration" in long_song,
+                long_song[:120])
+        big = explain_failure(E, "yue2_3b_bf16.safetensors",
+                              int(7.8 * GB), int(8.5 * GB), 180)
+        s.check("a model larger than the card names both numbers",
+                "7.8 GB" in big and "8.5 GB" in big and "int8" in big,
+                big[:120])
+        s.check("a model that fits is not blamed on memory",
+                "video memory" not in explain_failure(
+                    E, "yue2_3b_int8_convrot.safetensors", 4 * GB, 24 * GB, 180))
+        again = explain_failure(E, "yue2_3b_int8_convrot.safetensors",
+                                4 * GB, 24 * GB, 180, retried=True)
+        s.check("once the retry has failed too, length is ruled out, not repeated",
+                "not the cause" in again and "Duration" not in again,
+                again[:120])
+        s.check("the engine's own words are always kept",
+                all(E in t for t in (long_song, big, again)))
+        s.check("an error that is not this one is passed through untouched",
+                explain_failure("KSampler: something else", "x", 1, 2, 900)
+                == "KSampler: something else")
 
         # -- an unreachable engine must not explode ------------------------
         dead = ComfyClient(f"http://127.0.0.1:{9}")

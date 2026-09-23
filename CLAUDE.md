@@ -154,6 +154,29 @@
     churns the DOM under an open dropdown and can overwrite a choice being
     made. While the list stands, the dropdown is the truth.
 
+25. **"Ready" is not "the port answered".** ComfyUI replies to
+    `/system_stats` before it has finished loading, so a first launch showed
+    **Engine ready** while the engine was still coming up — and a song made in
+    that window fails inside the nodes for reasons that have nothing to do
+    with the song. `engine_starting()` withholds `ready` until ComfyUI prints
+    its own "Starting server" banner, and only for a process YuE Studio
+    started: an adopted engine was up before us and is never held back. A
+    build whose banner is not recognised is released after `STARTING_GRACE`,
+    so an unfamiliar ComfyUI cannot be kept from working for ever.
+
+26. **`[Errno 22] Invalid argument` gets its cause attached.** It is Windows'
+    answer to several unrelated refusals and the YuE2 nodes raise it for at
+    least two — a song longer than the build can allocate for, and a
+    checkpoint too large for the card. Alone it sends people to look at their
+    lyrics, which is never where the fault is. `explain_failure()` keeps the
+    engine's own words and adds the reading: the duration when it is long,
+    the two numbers when the model outweighs the card, and — once the
+    compatibility retry has failed too — that length and sampling are now
+    ruled out rather than repeating advice already tried. The retry's
+    `warning` is rendered on the job card: it changes the song's length and
+    sampling to get through, and doing that silently left the settings on
+    screen disagreeing with the song that came out.
+
 ## Validation gate — run after any edit
 
 ```bash
@@ -170,7 +193,7 @@ node --check /tmp/app.js
 A missing function declaration in the inline script kills all interactivity
 silently — `node --check` is not optional.
 
-`python tests/run.py` runs that gate and everything else (521 checks, about
+`python tests/run.py` runs that gate and everything else (532 checks, about
 three minutes); `python tests/run.py gate` is just the block above. Run the
 whole suite before pushing. Tests take their own port and their own
 `YUE_STUDIO_DATA` directory, so they never touch a real library. Four of them
