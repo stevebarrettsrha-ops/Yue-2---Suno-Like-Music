@@ -188,6 +188,32 @@ class ComfyClient:
                 return arg[:cut] if cut > 0 else ""
         return ""
 
+    def vram_total(self) -> int:
+        """Bytes of video memory on the card ComfyUI is using, or 0 if unknown.
+
+        /system_stats lists a device per accelerator with its vram_total. It is
+        the one number that turns "[Errno 22] Invalid argument" from a riddle
+        into a sentence: a checkpoint whose weights alone match the card is a
+        checkpoint that cannot also render a song.
+        """
+        try:
+            r = requests.get(f"{self.url}/system_stats", timeout=10)
+            r.raise_for_status()
+            devices = (r.json() or {}).get("devices") or []
+        except Exception:
+            return 0
+        best = 0
+        for dev in devices:
+            if not isinstance(dev, dict):
+                continue
+            if dev.get("type") in ("cpu", "mps") and len(devices) > 1:
+                continue            # a real accelerator is listed too
+            try:
+                best = max(best, int(dev.get("vram_total") or 0))
+            except (TypeError, ValueError):
+                continue
+        return best
+
     def audio_encoders(self) -> list[str]:
         try:
             return self.combo_options(
@@ -640,6 +666,58 @@ class ComfyClient:
         name = data.get("name") or file_storage.filename
         sub = data.get("subfolder") or ""
         return f"{sub}/{name}" if sub else name
+
+
+def _gb(n: int) -> str:
+    return f"{n / 1e9:.1f} GB"
+
+
+def explain_failure(err: str, ckpt: str = "", model_bytes: int = 0,
+                    vram_bytes: int = 0, duration: int = 0,
+                    retried: bool = False) -> str:
+    """Add the cause to an error that names only a symptom.
+
+    "[Errno 22] Invalid argument" is Windows' answer to a great many refused
+    operations, and the YuE2 nodes surface it for at least two unrelated ones:
+    an allocation for a song longer than the build can manage, and a
+    checkpoint that will not fit in video memory. On its own it sends people
+    to look at their lyrics, which is never where the fault is. The original
+    text is kept — someone may need the exact wording — and the reading is
+    added after it.
+    """
+    low = err.lower()
+    if "errno 22" not in low and "invalid argument" not in low:
+        return err
+
+    if retried:
+        # The compatibility pass already cut the song to 3:00 and put the
+        # reference sampling values back. Failing again rules all of that
+        # out, which is worth saying rather than repeating the same advice.
+        return (f"{err} — this was retried at 3:00 with the reference "
+                "settings and failed the same way, so the song's length and "
+                "sampling are not the cause. That points at the model itself: "
+                "try the other checkpoint in the selector at the top of "
+                "Create, and if both fail the engine's own log on the Engine "
+                "page has the traceback underneath this message.")
+
+    if duration >= 600:
+        mins = duration // 60
+        return (f"{err} — the song is set to {mins}:{duration % 60:02d}. This "
+                "node reserves for the whole length before it writes a note, "
+                "and the long end of the range is where it has been seen to "
+                "fall over. Set Duration to Auto, or 6:00, and make it again.")
+
+    if model_bytes and vram_bytes and model_bytes > vram_bytes * 0.85:
+        return (f"{err} — {ckpt} is {_gb(model_bytes)} and this card has "
+                f"{_gb(vram_bytes)} of video memory, so its weights alone "
+                "leave no room to render a song. Pick the int8 model in the "
+                "selector at the top of Create; it is the same model, "
+                "quantised to fit.")
+
+    return (f"{err} — this is usually the song's length, a checkpoint too "
+            "large for the card, or a sampling value at the end of its range. "
+            "Duration set to Auto, the int8 model, and Repetition back at "
+            "1.20 is the combination most likely to get through.")
 
 
 def _readable_error(err: dict) -> str:

@@ -461,6 +461,12 @@ class ComfyProcess:
         # is running, and the difference between "still starting" and "it died"
         # — which the Engine page had no way to tell apart.
         self.exit_code: int | None = None
+        # ComfyUI answers its port, and prints its "Starting server" banner,
+        # at different moments. Until the banner, what is answering is an
+        # engine still putting itself together — which is not something to
+        # call ready.
+        self.serving = False
+        self.started_at = 0.0
         self._lock = threading.Lock()
 
     def note(self, msg: str) -> None:
@@ -487,6 +493,8 @@ class ComfyProcess:
         if self.alive():
             return
         self.exit_code = None
+        self.serving = False
+        self.started_at = time.time()
         if not (comfy_dir / "main.py").exists():
             raise RuntimeError(
                 f"There is no ComfyUI at {comfy_dir} any more — the folder "
@@ -533,6 +541,9 @@ class ComfyProcess:
                     self.lines.append(line)
                     if len(self.lines) > 2000:
                         del self.lines[:1000]
+                if any(k in line for k in ("Starting server",
+                                           "To see the GUI")):
+                    self.serving = True
                 if any(k in line for k in ("Error", "Traceback", "error:",
                                            "Starting server", "To see the GUI")):
                     prog.log(f"ComfyUI: {line}")

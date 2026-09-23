@@ -1085,7 +1085,13 @@ function renderJobs() {
       '<div class="bar"><i style="width:' + pct + '%"></i></div>' +
       '<div class="s"><span>' + esc(j.error || j.stage || "") + "</span>" +
       (j.status === "running" ? '<button data-cancel="' + j.id +
-        '" style="color:var(--dim)">Stop</button>' : "") + "</div>";
+        '" style="color:var(--dim)">Stop</button>' : "") + "</div>" +
+      // A compatibility retry changes the song's length and sampling to get
+      // it through. That was recorded and never shown, so the settings a
+      // song came out on could differ from the ones on screen with nothing
+      // saying so.
+      (j.warning ? '<div class="s" style="color:var(--dim)"><span>' +
+        esc("First attempt: " + j.warning) + "</span></div>" : "");
     box.appendChild(d);
   });
   box.querySelectorAll("[data-cancel]").forEach((b) => b.addEventListener("click", async () => {
