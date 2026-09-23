@@ -67,6 +67,43 @@ def run(slow: bool = False) -> Suite:
             s.check("style chips light up for what is already written",
                     page.locator("#styleChips .chip.on").count() >= 1)
 
+            # -- choosing the song model, and it staying chosen -------------
+            # The options come from the engine, so they arrive after the draft
+            # is read back. A pick that does not survive that is not a pick.
+            page.wait_for_function(
+                "() => document.querySelector('#ckpt').options.length > 1",
+                timeout=15000)
+            options = page.locator("#ckpt option").all_inner_texts()
+            s.check("both installed models are offered by name",
+                    any("int8" in o for o in options)
+                    and any("bf16" in o for o in options), str(options))
+            s.check("and auto is the default",
+                    page.input_value("#ckpt") == "")
+
+            page.select_option("#ckpt", "yue2_3b_bf16.safetensors")
+            page.reload(wait_until="networkidle")
+            # A reload lands on Home, where the Create page — and the picker
+            # with it — is hidden. The value is still readable there.
+            page.wait_for_function(
+                "() => document.querySelector('#ckpt').value === "
+                "'yue2_3b_bf16.safetensors'", timeout=15000)
+            s.check("the chosen model survives a reload",
+                    page.input_value("#ckpt") == "yue2_3b_bf16.safetensors")
+
+            # Choosing auto again has to stick too — a remembered pick must
+            # not reinstate itself over a deliberate return to auto.
+            page.click('.nav[data-view="create"]')
+            page.select_option("#ckpt", "")
+            page.reload(wait_until="networkidle")
+            page.wait_for_function(
+                "() => document.querySelector('#ckpt').options.length > 1",
+                timeout=15000)
+            page.wait_for_timeout(1200)
+            s.check("and going back to auto sticks as well",
+                    page.input_value("#ckpt") == "",
+                    page.input_value("#ckpt"))
+            page.click('.nav[data-view="create"]')
+
             # -- attachments look attached, and one click detaches ----------
             # The reference used to keep a bare "+ Audio" face while quietly
             # making every next song a cover, and the voice button could only
