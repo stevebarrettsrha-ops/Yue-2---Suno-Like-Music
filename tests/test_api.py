@@ -195,6 +195,37 @@ def run(slow: bool = False) -> Suite:
                 and not tracks[0].get("abc"),
                 job.get("error", job.get("stage", "job vanished")))
 
+    # -- a song waiting its turn is not charged for the wait ---------------
+    # ComfyUI renders one at a time. The second of a pair used to start its
+    # own clock the moment it was queued, so with a slow model it could be
+    # called timed out while it had never begun rendering.
+    with comfy(delay=3) as engine, Workspace() as data, \
+            studio(engine.url, data) as app:
+        made = requests.post(f"{app.url}/api/generate",
+                             json={"style": "two at once", "count": 2},
+                             timeout=20).json()
+        waited = ""
+        for _ in range(40):
+            jobs = {j["id"]: j for j in
+                    requests.get(f"{app.url}/api/jobs", timeout=10).json()}
+            second = jobs.get(made["jobs"][1], {})
+            if "ahead of it" in (second.get("stage") or ""):
+                waited = second.get("stage", "")
+                s.check("the one behind says it is waiting, not rendering",
+                        second.get("elapsed", 0) >= 0 and second["status"]
+                        == "running", str(second)[:110])
+                break
+            if second.get("status") in ("done", "error"):
+                break
+            time.sleep(0.5)
+        s.check("a queued song reports waiting rather than progress",
+                bool(waited), waited or "never showed the waiting stage")
+        jobs = finish_jobs(app.url, 90)
+        done = [j for j in jobs if j["id"] in made["jobs"]]
+        s.check("and both still finish",
+                len(done) == 2 and all(j["status"] == "done" for j in done),
+                str([(j["status"], j.get("error")) for j in done])[:140])
+
     # -- stopping one song must not stop another --------------------------
     with comfy(delay=25) as engine, Workspace() as data, \
             studio(engine.url, data) as app:

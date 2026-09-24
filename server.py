@@ -456,6 +456,15 @@ def ws_listener() -> None:
 # --------------------------------------------------------------------------- #
 TERMINAL = ("done", "error", "cancelled")
 
+# How long a song may show no sign of life at all before it is called stuck.
+# Measured from the last change ComfyUI reported — the node it is on, or the
+# step it has reached — and only once it is actually executing. A song that is
+# merely slow keeps moving and is never cut off; the planner can sit quiet for
+# a long time on a big model, which is why this is generous.
+STALL_LIMIT = 1800.0
+# A song ComfyUI has forgotten and never started is not going to begin later.
+NEVER_STARTED_LIMIT = 300.0
+
 
 def run_job(job_id: str, params: dict, built: dict | None = None) -> None:
     def set_state(**kw):
@@ -480,7 +489,15 @@ def run_job(job_id: str, params: dict, built: dict | None = None) -> None:
         prompt_id = client.queue(built["prompt"])
         set_state(prompt_id=prompt_id, stage="Writing the melody plan", pct=6)
 
-        started = time.time()
+        # queued_at is when ComfyUI took it; run_since is when ComfyUI began
+        # it. They differ by however long the songs ahead of it take, which is
+        # time this song must not be charged for — making two at once used to
+        # time the second one out while it had never started rendering.
+        queued_at = time.time()
+        started = queued_at
+        run_since = 0.0
+        last_move = queued_at
+        moved = None
         last_stage = ""
         unreachable_since = 0.0
         abc_fallback_used = False
@@ -550,7 +567,8 @@ def run_job(job_id: str, params: dict, built: dict | None = None) -> None:
                     built = client.build_prompt(fallback)
                     prompt_id = client.queue(built["prompt"])
                     set_state(prompt_id=prompt_id)
-                    started = time.time()
+                    queued_at = started = last_move = time.time()
+                    run_since, moved = 0.0, None
                     unreachable_since = 0.0
                     continue
                 can_retry_music = (
@@ -577,7 +595,8 @@ def run_job(job_id: str, params: dict, built: dict | None = None) -> None:
                     built = client.build_prompt(params)
                     prompt_id = client.queue(built["prompt"])
                     set_state(prompt_id=prompt_id)
-                    started = time.time()
+                    queued_at = started = last_move = time.time()
+                    run_since, moved = 0.0, None
                     unreachable_since = 0.0
                     continue
                 set_state(status="error", stage="Failed",
@@ -595,22 +614,55 @@ def run_job(job_id: str, params: dict, built: dict | None = None) -> None:
 
             wp = ws_progress.get(prompt_id) or {}
             value, maximum = wp.get("value", 0), wp.get("max", 0)
+
+            # Any of these changing is ComfyUI saying it is still working: the
+            # node it has reached, or the step it is on. Timing a song out on
+            # total elapsed instead killed slow-but-healthy renders, which is
+            # exactly what a big model on a small card looks like.
+            fingerprint = (wp.get("node"), value, maximum)
+            if fingerprint != moved:
+                moved, last_move = fingerprint, time.time()
+            if not run_since and (wp or client.is_running(prompt_id)):
+                run_since = last_move = time.time()
+
+            if not run_since:
+                # Still behind other songs. Nothing is wrong and nothing is
+                # owed, so no clock runs — but a prompt ComfyUI has forgotten
+                # is never going to start either.
+                if (time.time() - queued_at > NEVER_STARTED_LIMIT
+                        and not hist and not client.in_queue(prompt_id)):
+                    set_state(status="error", stage="Failed",
+                              error="ComfyUI no longer has this song in its "
+                                    "queue and never started it. Press Create "
+                                    "to make it again.")
+                    return
+                set_state(pct=5, stage="Waiting for the songs ahead of it",
+                          elapsed=round(time.time() - queued_at))
+                continue
+
             if maximum:
                 # KSampler steps dominate the visible progress band 15-90%.
                 pct = 15 + min(value / maximum, 1.0) * 75
                 stage = "Rendering audio"
             else:
-                elapsed = time.time() - started
+                elapsed = time.time() - run_since
                 pct = min(6 + elapsed / 6.0, 14)
                 stage = "Writing the melody plan"
             if stage != last_stage:
                 last_stage = stage
             set_state(pct=round(pct, 1), stage=stage,
-                      elapsed=round(time.time() - started))
+                      elapsed=round(time.time() - run_since))
 
-            if time.time() - started > 3600:
+            quiet = time.time() - last_move
+            if quiet > STALL_LIMIT:
+                ran = int(time.time() - run_since) // 60
                 set_state(status="error", stage="Timed out",
-                          error="No audio after an hour. Check the ComfyUI log.")
+                          error=f"ComfyUI reported nothing for "
+                                f"{int(quiet) // 60} minutes, after rendering "
+                                f"for {ran}. The engine's log on the Engine "
+                                "page says what it was doing. A shorter song, "
+                                "or the int8 model, is the usual way past a "
+                                "render that will not move.")
                 return
 
         set_state(stage="Saving the track", pct=94)

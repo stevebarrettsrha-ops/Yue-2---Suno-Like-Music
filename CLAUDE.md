@@ -177,6 +177,18 @@
     sampling to get through, and doing that silently left the settings on
     screen disagreeing with the song that came out.
 
+27. **A song is timed out for stalling, never for being slow, and never
+    for queueing.** ComfyUI renders one at a time, so `queued_at` and
+    `run_since` are different moments and the gap between them belongs to the
+    songs ahead. Charging a song for it timed the second of a pair out while
+    it had not begun rendering — worse the slower the model, which is exactly
+    when people make two. Nothing is owed while it waits (`NEVER_STARTED_LIMIT`
+    only catches a prompt ComfyUI has forgotten), and once it is running the
+    clock is `STALL_LIMIT` since the last thing ComfyUI *reported* — the node
+    it reached or the step it is on. A total-elapsed cap killed healthy
+    renders, which is what a big model on a small card looks like: slow, but
+    always moving.
+
 ## Validation gate — run after any edit
 
 ```bash
@@ -193,7 +205,7 @@ node --check /tmp/app.js
 A missing function declaration in the inline script kills all interactivity
 silently — `node --check` is not optional.
 
-`python tests/run.py` runs that gate and everything else (532 checks, about
+`python tests/run.py` runs that gate and everything else (535 checks, about
 three minutes); `python tests/run.py gate` is just the block above. Run the
 whole suite before pushing. Tests take their own port and their own
 `YUE_STUDIO_DATA` directory, so they never touch a real library. Four of them
