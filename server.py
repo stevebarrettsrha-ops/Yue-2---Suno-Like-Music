@@ -22,6 +22,7 @@ import requests
 from flask import Flask, jsonify, request, send_file, send_from_directory
 
 import bootstrap
+import lyricist
 import manager
 from bootstrap import (ComfyProcess, Progress, clean_url,
                        comfy_online, comfy_port, detect_comfy_dirs,
@@ -768,6 +769,9 @@ def api_status():
         "setup_complete": bool(cfg.get("setup_complete")),
         "missing_models": missing,
         "missing_required_models": missing_required,
+        # Whether the Create page's Write button can do anything yet. Read
+        # from the config alone — the writer's server is not probed here.
+        "lyric_writer": lyricist.configured(cfg),
         "config": {k: cfg.get(k) for k in
                    ("comfy_url", "comfy_dir", "models_dir", "managed",
                     "auto_start_comfy", "download_cover_model", "download_bf16",
@@ -1200,7 +1204,10 @@ def api_config():
     cfg.update(settings_from(body, TEXT_SETTINGS + FLAG_SETTINGS))
     client.url = cfg["comfy_url"]
     save_config(cfg)
-    return jsonify({"ok": True, "config": cfg})
+    # The same view GET gives. Answering with the whole config handed the
+    # saved HuggingFace token and the lyric writer's API key to the page.
+    return jsonify({"ok": True, "config": {k: cfg.get(k) for k in
+                                           (TEXT_SETTINGS + FLAG_SETTINGS)}})
 
 
 # --------------------------------------------------------------------------- #
@@ -1409,6 +1416,57 @@ def api_task_cancel(task_id: str):
     if task:
         task.cancel = True
     return jsonify({"ok": True})
+
+
+# --------------------------------------------------------------------------- #
+# routes - lyric writer
+#
+# Optional. A chat model the person already has writes lyrics, a style line and
+# a title into the Create page. The key is kept like the HuggingFace token:
+# saved in the config, returned masked, and bound to the address it was
+# entered for.
+# --------------------------------------------------------------------------- #
+@app.get("/api/llm/settings")
+def api_llm_settings():
+    return jsonify(lyricist.settings_view(cfg))
+
+
+@app.post("/api/llm/settings")
+def api_llm_settings_save():
+    try:
+        lyricist.apply_settings(cfg, json_object())
+    except lyricist.LyricistError as exc:
+        return jsonify({"error": str(exc)}), 400
+    save_config(cfg)
+    return jsonify({"ok": True, **lyricist.settings_view(cfg)})
+
+
+@app.get("/api/llm/models")
+def api_llm_models():
+    try:
+        return jsonify({"models": lyricist.list_models(cfg)})
+    except lyricist.LyricistError as exc:
+        return jsonify({"error": str(exc)}), 400
+
+
+@app.post("/api/lyrics/write")
+def api_lyrics_write():
+    """Start a write. The answer arrives on the task: poll /api/tasks?id=."""
+    ask = lyricist.clean_request(json_object())
+    try:
+        conn = lyricist.connection(cfg)
+    except lyricist.LyricistError as exc:
+        return jsonify({"error": str(exc)}), 409
+    if ask["want"] == "polish" and not ask["lyrics"]:
+        return jsonify({"error": "There are no lyrics to polish yet."}), 400
+    # One at a time: a second press while the first is still streaming would
+    # pay for two answers and keep only one of them.
+    if manager.TASKS.running("lyrics"):
+        return jsonify({"error": "Already writing. Stop that one first."}), 409
+    task = manager.spawn("lyrics", "Writing lyrics",
+                         lambda t: lyricist.run(t, conn, ask),
+                         meta={"want": ask["want"]})
+    return jsonify({"ok": True, "task": task.view()})
 
 
 # --------------------------------------------------------------------------- #

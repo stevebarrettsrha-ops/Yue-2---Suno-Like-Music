@@ -101,6 +101,15 @@
   .btn.thin{padding:7px 13px;font-size:12.5px}
   .btn:disabled{opacity:.45;cursor:not-allowed}
   .note{font-size:12.5px;color:var(--dim);margin:10px 0 0}
+  /* lyric writer */
+  .lyricist{border-top:1px solid var(--line-soft);padding:12px 15px 14px;background:#131317}
+  .lyricist textarea{padding:8px 11px;border:1px solid var(--line);border-radius:10px;
+    background:#151519;min-height:58px;line-height:1.5}
+  .lyricist .lrow{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:10px}
+  .lyricist .lrow .search{width:130px}
+  #lyrDraft{height:auto;max-height:190px;margin-top:10px}
+  .sheet h2{font-size:15px;margin:24px 0 4px}
+  .sheet select.search{appearance:auto}
   .bad-text{color:#ff9a9a}
 
   /* create header */
@@ -440,6 +449,7 @@
         <details class="card" id="cardLyrics" open>
           <summary><svg class="chev" viewBox="0 0 24 24"><path d="m9 6 6 6-6 6"/></svg>Lyrics
             <div class="tools">
+              <button class="iconbtn accent" id="btnLyricist" title="Write lyrics with a language model"><svg viewBox="0 0 24 24"><path d="M4 20l4-1 10-10-3-3L5 16zM13 7l3 3M18 3l.8 1.7L20.5 5.5l-1.7.8L18 8l-.8-1.7-1.7-.8 1.7-.8z"/></svg></button>
               <button class="iconbtn" id="btnUndo" title="Undo"><svg viewBox="0 0 24 24"><path d="M4 9h11a4 4 0 0 1 0 8h-5M4 9l4-4M4 9l4 4"/></svg></button>
               <button class="iconbtn" id="btnRedo" title="Redo"><svg viewBox="0 0 24 24"><path d="M20 9H9a4 4 0 0 0 0 8h5M20 9l-4-4M20 9l-4 4"/></svg></button>
               <button class="iconbtn" id="btnStructure" title="Insert song structure"><svg viewBox="0 0 24 24"><path d="M4 6h16M4 12h10M4 18h16"/></svg></button>
@@ -448,6 +458,25 @@
           <textarea id="lyrics" spellcheck="false"
             placeholder="Start writing lyrics, or leave this empty for instrumental"></textarea>
           <p class="note" id="lyricsNote" hidden></p>
+          <div class="lyricist" id="lyricist" hidden>
+            <textarea id="lyrBrief" spellcheck="false"
+              placeholder="What is the song about? A feeling, a story, a place — one line is enough."></textarea>
+            <div class="lrow">
+              <div class="segmented" id="segLyrWant">
+                <button class="on" data-v="song" title="Title, style and lyrics">Whole song</button>
+                <button data-v="lyrics" title="Lyrics for the style you have">Lyrics only</button>
+                <button data-v="polish" title="Tidy the lyrics already here">Polish mine</button>
+              </div>
+              <input type="text" id="lyrLang" class="search" placeholder="Language" value="English"
+                title="The language to sing in" />
+              <button class="btn go thin" id="btnLyrWrite">Write</button>
+              <button class="btn thin" id="btnLyrStop" hidden>Stop</button>
+              <button class="btn thin" id="btnLyrRevert" hidden
+                title="Bring back the title, style and lyrics from before this write">Put back</button>
+            </div>
+            <p class="note" id="lyrNote"></p>
+            <div class="log" id="lyrDraft" hidden></div>
+          </div>
         </details>
 
         <details class="card" id="cardStyles" open>
@@ -741,6 +770,25 @@
       <div class="switch" style="align-self:end"><label for="cfgAuto">Start ComfyUI with YuE Studio</label>
         <input type="checkbox" id="cfgAuto" /></div>
     </div>
+    <h2>Lyric writer <span class="note">optional</span></h2>
+    <p class="note" style="margin:0 0 12px">A chat model that writes lyrics, a style
+      and a title from a line about the song. Ollama and LM Studio run on this
+      computer and need no key; cloud services do.</p>
+    <div class="grid2">
+      <div><label class="note" for="llmProvider">Service</label>
+        <select id="llmProvider" class="search"></select></div>
+      <div><label class="note" for="llmBase">Address</label>
+        <input type="text" id="llmBase" class="search" spellcheck="false" /></div>
+      <div><label class="note" for="llmModel">Model</label>
+        <div style="display:flex;gap:6px">
+          <input type="text" id="llmModel" class="search" list="llmModels" spellcheck="false" />
+          <button class="btn thin" id="btnLlmList" title="Ask the server which models it has">List</button></div>
+        <datalist id="llmModels"></datalist></div>
+      <div><label class="note" for="llmKey">API key</label>
+        <input type="password" id="llmKey" class="search" autocomplete="off" spellcheck="false" />
+        <p class="note" id="llmKeyNote" style="margin-top:5px"></p></div>
+    </div>
+    <p class="note" id="llmNote"></p>
     <div class="rowbtn">
       <button class="btn go" id="btnSaveCfg">Save</button>
       <button class="btn" id="btnStartComfy">Start ComfyUI now</button>
@@ -1752,6 +1800,7 @@ function renderAttach() {
 async function refreshStatus() {
   let st; try { st = await api("/api/status"); } catch (e) { return; }
   S.status = st;
+  if (!$("lyricist").hidden) lyricistNote();
   const pill = $("enginePill");
   pill.classList.toggle("on", !!st.ready);
   pill.classList.toggle("off", !st.comfy_online);
@@ -1920,6 +1969,18 @@ function wire() {
     ta.value = ta.value.trim() ? ta.value.trim() + "\n\n" + tpl : tpl;
     ta.focus(); saveDraft(); });
   $("btnClearLyrics").addEventListener("click", () => { $("lyrics").value = ""; saveDraft(); });
+  $("btnLyricist").addEventListener("click", (e) => { e.preventDefault(); toggleLyricist(); });
+  $("btnLyrWrite").addEventListener("click", writeLyrics);
+  $("btnLyrStop").addEventListener("click", () => {
+    if (LYR.task) api("/api/tasks/" + LYR.task + "/cancel", { method:"POST" }); });
+  $("btnLyrRevert").addEventListener("click", revertLyrics);
+  wireSeg("segLyrWant", null);
+  $("lyrBrief").value = store("yue.lyrBrief") || "";
+  $("lyrLang").value = store("yue.lyrLang") || "English";
+  $("lyrBrief").addEventListener("input", () => store("yue.lyrBrief", $("lyrBrief").value));
+  $("lyrLang").addEventListener("input", () => store("yue.lyrLang", $("lyrLang").value));
+  $("llmProvider").addEventListener("change", llmProviderChanged);
+  $("btnLlmList").addEventListener("click", listLlmModels);
   $("btnClearStyle").addEventListener("click", () => {
     $("style").value = ""; syncChips(); saveDraft(); });
   $("btnClearAbc").addEventListener("click", () => {
@@ -2044,6 +2105,7 @@ function wire() {
       $("cfgDir").value = c.comfy_dir || "";
       $("cfgAuto").checked = !!c.auto_start_comfy;
       $("btnSaveCfg").disabled = false;
+      loadLlm();
     } catch (e) {
       toast("Could not read the saved settings: " + e.message, true);
     }
@@ -2057,7 +2119,10 @@ function wire() {
       body:JSON.stringify({ comfy_url:$("cfgUrl").value.trim(),
         models_dir:$("cfgModels").value.trim(), comfy_dir:$("cfgDir").value.trim(),
         auto_start_comfy:$("cfgAuto").checked }) });
-    toast("Saved."); refreshStatus(); });
+    try { await saveLlm(); $("llmNote").textContent = ""; toast("Saved."); }
+    catch (e) { $("llmNote").textContent = e.message;
+      toast("Engine settings saved; the lyric writer's were not: " + e.message, true); }
+    refreshStatus(); });
 
   document.addEventListener("keydown", (e) => {
     if (e.key === "Escape") {
@@ -2066,6 +2131,168 @@ function wire() {
     }
     if ((e.ctrlKey || e.metaKey) && e.key === "Enter") { e.preventDefault(); create(); }
   });
+}
+
+/* ========================= lyric writer ========================= */
+/* Optional. A chat model the person already has writes into the fields on
+   this page; nothing is sent to it until Write is pressed. The write is a
+   task on the server — it streams, and Stop ends it between chunks. What was
+   in the fields before is kept so one press puts it back. */
+const LYR = { task:null, timer:null, before:null, providers:[] };
+function lyricistNote() {
+  if (LYR.task) return;
+  const ready = S.status && S.status.lyric_writer;
+  $("lyrNote").textContent = ready
+    ? "Uses the lyric writer from Settings. Nothing is sent until you press Write."
+    : "No lyric writer yet — choose one in Settings (Ollama or LM Studio work "
+      + "offline, or a cloud service with a key).";
+}
+function toggleLyricist(open) {
+  const box = $("lyricist");
+  box.hidden = open === undefined ? !box.hidden : !open;
+  if (!box.hidden) { $("cardLyrics").open = true; lyricistNote(); $("lyrBrief").focus(); }
+}
+function lyrBusy(on) {
+  $("btnLyrWrite").hidden = on; $("btnLyrStop").hidden = !on;
+  if (on) $("btnLyrRevert").hidden = true;
+}
+async function writeLyrics() {
+  if (!(S.status && S.status.lyric_writer)) {
+    $("navSettings").click();
+    toast("Choose a lyric writer in Settings first.", true); return;
+  }
+  const o = readOpts();
+  const want = segGet("segLyrWant");
+  const body = { want:want, brief:$("lyrBrief").value.trim(),
+    style:$("style").value.trim(), lyrics:$("lyrics").value,
+    title:$("songTitle").value.trim(), language:$("lyrLang").value.trim(),
+    vocal:o.vocal, duration:o.duration };
+  if (want === "song" && !body.brief && !body.style) {
+    toast("Say what the song is about first.", true); $("lyrBrief").focus(); return; }
+  if (want === "lyrics" && !body.brief && !body.style) {
+    toast("Write a style, or say what the song is about.", true); return; }
+  if (want === "polish" && !body.lyrics.trim()) {
+    toast("There are no lyrics to polish yet.", true); return; }
+  try {
+    const r = await api("/api/lyrics/write", { method:"POST",
+      headers:{"Content-Type":"application/json"}, body:JSON.stringify(body) });
+    LYR.task = r.task.id;
+    LYR.before = { lyrics:$("lyrics").value, style:$("style").value,
+      title:$("songTitle").value };
+    lyrBusy(true);
+    $("lyrDraft").textContent = ""; $("lyrDraft").hidden = false;
+    $("lyrNote").textContent = "Asking the writer…";
+    pollLyrics();
+  } catch (e) { toast(e.message, true); }
+}
+async function pollLyrics() {
+  clearTimeout(LYR.timer);
+  if (!LYR.task) return;
+  let t;
+  try { t = await api("/api/tasks?id=" + LYR.task + "&since=100000"); }
+  catch (e) { LYR.timer = setTimeout(pollLyrics, 2000); return; }
+  const m = t.meta || {};
+  if (typeof m.draft === "string") {
+    const d = $("lyrDraft"); d.textContent = m.draft; d.scrollTop = d.scrollHeight; }
+  if (t.state === "running") {
+    $("lyrNote").textContent = t.detail || "Writing…";
+    LYR.timer = setTimeout(pollLyrics, 700); return;
+  }
+  LYR.task = null; lyrBusy(false);
+  if (t.state === "done" && m.result) { applyLyrics(m.result, m.want); return; }
+  $("lyrDraft").hidden = true;
+  if (t.state === "cancelled") { $("lyrNote").textContent = "Stopped. Nothing was changed."; return; }
+  $("lyrNote").textContent = t.detail || "The writer failed.";
+  toast(t.detail || "The writer failed.", true);
+}
+function applyLyrics(r, want) {
+  const inst = segGet("segVocal") === "instrumental";
+  if (r.lyrics && !inst) {
+    // Onto the undo history, so Undo steps back to what was there.
+    const old = $("lyrics").value;
+    if (S.hist[S.hist.length - 1] !== old) S.hist.push(old);
+    S.hist.push(r.lyrics);
+    if (S.hist.length > 60) S.hist.splice(0, S.hist.length - 60);
+    S.histAt = S.hist.length - 1;
+    $("lyrics").value = r.lyrics; lyricsNote();
+  }
+  if (want === "song" && r.style) { $("style").value = r.style; syncChips(); }
+  if (want === "song" && r.title) $("songTitle").value = r.title;
+  $("lyrDraft").hidden = true;
+  $("btnLyrRevert").hidden = false;
+  saveDraft();
+  const done = want === "song" ? "Title, style and lyrics written."
+    : want === "polish" ? "Lyrics polished." : "Lyrics written.";
+  $("lyrNote").textContent = done + " Read them through before you press Create."
+    + ((r.warnings || []).length ? " " + r.warnings.join(" ") : "");
+  toast(done);
+}
+function revertLyrics() {
+  const b = LYR.before; if (!b) return;
+  $("lyrics").value = b.lyrics; $("style").value = b.style; $("songTitle").value = b.title;
+  syncChips(); lyricsNote(); saveDraft();
+  LYR.before = null; $("btnLyrRevert").hidden = true;
+  $("lyrNote").textContent = "Put back what was there before.";
+}
+
+/* The writer's half of the Settings sheet. The key box stays empty: a saved
+   key is only ever shown as its last four characters. */
+function llmProvider(id) { return LYR.providers.find((p) => p.id === id) || {}; }
+function llmKeyNote(v) {
+  const prov = llmProvider($("llmProvider").value);
+  $("llmKeyNote").textContent = v && v.key_source === "saved"
+    ? "A key is saved (" + v.key_hint + "). Leave the box empty to keep it."
+    : v && v.key_source === "environment"
+    ? "Using " + prov.env + " from the environment."
+    : prov.needs_key ? "Needed for this service."
+    : "Not needed unless your server asks for one.";
+}
+async function loadLlm() {
+  try {
+    const v = await api("/api/llm/settings");
+    LYR.providers = v.providers || [];
+    const sel = $("llmProvider"); sel.innerHTML = "";
+    LYR.providers.forEach((p) => {
+      const o = document.createElement("option"); o.value = p.id; o.textContent = p.label;
+      sel.appendChild(o); });
+    sel.value = v.provider;
+    $("llmBase").value = v.base || "";
+    $("llmModel").value = v.model || "";
+    $("llmKey").value = "";
+    llmKeyNote(v);
+    $("llmNote").textContent = v.configured ? "" : "Not set up yet — Create works without it.";
+  } catch (e) { $("llmNote").textContent = "Could not read the writer settings: " + e.message; }
+}
+function llmProviderChanged() {
+  const prov = llmProvider($("llmProvider").value);
+  $("llmBase").value = prov.base || "";
+  $("llmModel").value = prov.model || "";
+  $("llmModels").innerHTML = "";
+  llmKeyNote(null);
+}
+async function saveLlm() {
+  const body = { provider:$("llmProvider").value, base:$("llmBase").value.trim(),
+    model:$("llmModel").value.trim() };
+  if ($("llmKey").value.trim()) body.key = $("llmKey").value.trim();
+  const v = await api("/api/llm/settings", { method:"POST",
+    headers:{"Content-Type":"application/json"}, body:JSON.stringify(body) });
+  $("llmKey").value = ""; llmKeyNote(v);
+  return v;
+}
+async function listLlmModels() {
+  const b = busy($("btnLlmList"), "…");
+  try {
+    await saveLlm();
+    const r = await api("/api/llm/models");
+    const dl = $("llmModels"); dl.innerHTML = "";
+    (r.models || []).forEach((m) => {
+      const o = document.createElement("option"); o.value = m; dl.appendChild(o); });
+    if (!$("llmModel").value && r.models && r.models.length) $("llmModel").value = r.models[0];
+    $("llmNote").textContent = r.models && r.models.length
+      ? r.models.length + " models on the server — pick one in the Model box."
+      : "The server answered, but lists no models. Pull or load one first.";
+  } catch (e) { $("llmNote").textContent = e.message; }
+  finally { b.done(); }
 }
 
 /* ========================= boot ========================= */
