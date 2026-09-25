@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import mimetypes
+import re
 import os
 import shutil
 import subprocess
@@ -33,10 +34,21 @@ from comfy import ComfyClient, ComfyError, explain_failure
 DATA_DIR = bootstrap.DATA_DIR          # honours YUE_STUDIO_DATA
 TRACKS_DIR = DATA_DIR / "tracks"
 LIBRARY_PATH = DATA_DIR / "library.json"
+# Recordings and uploads kept for reuse: the Audio panel's Browse list. ComfyUI's
+# input folder is not storage (rule 10 again) — it is where a copy is sent
+# each time one is used.
+REFS_DIR = DATA_DIR / "references"
+REFS_PATH = REFS_DIR / "references.json"
+AUDIO_EXTS = {".wav", ".flac", ".mp3", ".ogg", ".opus", ".m4a", ".aac",
+              ".webm", ".mp4", ".aif", ".aiff"}
+MAX_REF_BYTES = 200 * 1024 * 1024
 WEB_DIR = bootstrap.APP_DIR / "web"
 PORT = int(os.environ.get("YUE_STUDIO_PORT", "7788"))
 
 app = Flask(__name__, static_folder=None)
+# Nothing this app receives should be near this; a recording of a whole song
+# in wav is well under it.
+app.config["MAX_CONTENT_LENGTH"] = MAX_REF_BYTES + 1024 * 1024
 
 cfg = load_config()
 progress = Progress()
@@ -50,6 +62,7 @@ jobs_lock = threading.Lock()
 # finishing while a track is being deleted otherwise writes back a list that
 # never knew about the other one, and whichever wrote first is simply gone.
 library_lock = threading.RLock()
+refs_lock = threading.RLock()
 
 
 # --------------------------------------------------------------------------- #
@@ -1300,19 +1313,185 @@ def api_cancel(job_id: str):
     return jsonify({"ok": True})
 
 
+# --------------------------------------------------------------------------- #
+# references: uploads and recordings, kept to browse and use again
+# --------------------------------------------------------------------------- #
+_REF_ID = re.compile(r"[0-9a-f]{12}")
+_RECORDED_TYPES = {"audio/webm": ".webm", "audio/ogg": ".ogg", "audio/mp4": ".m4a",
+                   "audio/wav": ".wav", "audio/x-wav": ".wav", "audio/mpeg": ".mp3"}
+
+
+def read_refs() -> list[dict]:
+    """The saved references — always a list of records, like the library."""
+    with refs_lock:
+        try:
+            items = json.loads(REFS_PATH.read_text(encoding="utf-8"))
+        except Exception:
+            return []
+        if not isinstance(items, list):
+            return []
+        return [i for i in items if isinstance(i, dict)
+                and _REF_ID.fullmatch(str(i.get("id", "")))]
+
+
+def write_refs(items: list[dict]) -> None:
+    with refs_lock:
+        REFS_DIR.mkdir(parents=True, exist_ok=True)
+        tmp = REFS_PATH.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(items, indent=2), encoding="utf-8")
+        tmp.replace(REFS_PATH)
+
+
+def ref_file(item: dict | None) -> Path | None:
+    """A reference's audio: only ever a plain name inside data/references."""
+    name = Path(str((item or {}).get("file") or "")).name
+    return (REFS_DIR / name) if name else None
+
+
+def keep_reference(upload, kind: str, label: str) -> dict:
+    """Save an upload or a recording into data/references and list it.
+
+    A browser recording arrives as webm, ogg or mp4 depending on the browser;
+    with ffmpeg it is turned into wav, which every ComfyUI can load. Without
+    ffmpeg it is kept as it came, and ComfyUI's own decoder has to read it.
+    """
+    ext = Path(upload.filename or "").suffix.lower()
+    if ext not in AUDIO_EXTS:
+        mime = (upload.mimetype or "").split(";")[0].strip().lower()
+        ext = _RECORDED_TYPES.get(mime, "")
+    if ext not in AUDIO_EXTS:
+        raise ValueError("That does not look like an audio file. Use wav, "
+                         "flac, mp3, ogg, m4a or webm.")
+    REFS_DIR.mkdir(parents=True, exist_ok=True)
+    rid = uuid.uuid4().hex[:12]
+    raw = REFS_DIR / f"{rid}{ext}"
+    size = 0
+    with open(raw, "wb") as out:
+        while True:
+            chunk = upload.stream.read(1 << 20)
+            if not chunk:
+                break
+            size += len(chunk)
+            if size > MAX_REF_BYTES:
+                break
+            out.write(chunk)
+    if size > MAX_REF_BYTES:
+        raw.unlink(missing_ok=True)
+        raise ValueError("That file is larger than 200 MB.")
+    if not size:
+        raw.unlink(missing_ok=True)
+        raise ValueError("The file was empty.")
+    if kind == "recording" and ext != ".wav":
+        wav = REFS_DIR / f"{rid}.wav"
+        if convert_audio(raw, wav):
+            raw.unlink(missing_ok=True)
+            raw = wav
+    if kind == "recording":
+        default = "Recording " + time.strftime("%d %b %H:%M")
+    else:
+        default = Path(upload.filename or "").stem or "Audio"
+    item = {"id": rid, "kind": kind, "name": (label or default)[:120],
+            "file": raw.name, "bytes": raw.stat().st_size,
+            "seconds": audio_duration(raw), "created": time.time()}
+    with refs_lock:
+        items = read_refs()
+        items.insert(0, item)
+        write_refs(items)
+    return item
+
+
+def send_reference(path: Path, filename: str) -> str:
+    """Hand ComfyUI its own copy, and say plainly when it is not there."""
+    try:
+        return client.upload_path(path, filename)
+    except requests.RequestException:
+        raise ComfyError("ComfyUI is not running, so the audio has nowhere to "
+                         "go. It is saved under Browse — start ComfyUI from "
+                         "Settings and use it from there.") from None
+
+
 @app.post("/api/upload-reference")
-def api_upload_reference():
+@app.post("/api/references")
+def api_add_reference():
+    """Keep an upload or a recording, then send it to ComfyUI to use.
+
+    Kept first: a ComfyUI that is down loses nothing, the audio is waiting
+    under Browse. /api/upload-reference is the older name for the same thing.
+    """
     if "file" not in request.files:
         return jsonify({"error": "No file received."}), 400
+    kind = as_text(request.form.get("kind"), "upload")
+    kind = kind if kind in ("upload", "recording") else "upload"
     try:
-        name = client.upload_audio(request.files["file"])
-        return jsonify({"ok": True, "name": name})
-    except requests.RequestException:
-        return jsonify({"error": "ComfyUI is not running, so the reference "
-                                 "song has nowhere to go. Start it from "
-                                 "Settings and try again."}), 503
+        item = keep_reference(request.files["file"], kind,
+                              as_text(request.form.get("name")).strip())
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+    except OSError as exc:
+        return jsonify({"error": f"Could not save it: {exc}"}), 500
+    try:
+        name = send_reference(ref_file(item), item["file"])
+    except ComfyError as exc:
+        return jsonify({"error": str(exc), "reference": item}), 503
     except Exception as exc:  # noqa: BLE001
-        return jsonify({"error": str(exc)}), 500
+        return jsonify({"error": str(exc), "reference": item}), 500
+    return jsonify({"ok": True, "name": name, "reference": item})
+
+
+@app.get("/api/references")
+def api_references():
+    return jsonify([i for i in read_refs()
+                    if (ref_file(i) or REFS_DIR).is_file()])
+
+
+@app.get("/api/references/<rid>/audio")
+def api_reference_audio(rid: str):
+    item = next((i for i in read_refs() if i["id"] == rid), None)
+    path = ref_file(item) if item else None
+    if not path or not path.is_file():
+        return jsonify({"error": "That recording is gone."}), 404
+    mime = mimetypes.guess_type(path.name)[0] or "audio/wav"
+    return send_file(path, mimetype=mime, conditional=True)
+
+
+@app.post("/api/references/<rid>/use")
+def api_reference_use(rid: str):
+    item = next((i for i in read_refs() if i["id"] == rid), None)
+    path = ref_file(item) if item else None
+    if not path or not path.is_file():
+        return jsonify({"error": "That recording is gone."}), 404
+    try:
+        return jsonify({"ok": True, "name": send_reference(path, path.name),
+                        "reference": item})
+    except ComfyError as exc:
+        return jsonify({"error": str(exc)}), 503
+
+
+@app.delete("/api/references/<rid>")
+def api_reference_delete(rid: str):
+    with refs_lock:
+        items = read_refs()
+        gone = [i for i in items if i["id"] == rid]
+        write_refs([i for i in items if i["id"] != rid])
+    for item in gone:
+        path = ref_file(item)
+        if path and path.resolve().parent == REFS_DIR.resolve():
+            path.unlink(missing_ok=True)
+    return jsonify({"ok": True})
+
+
+@app.post("/api/track/<track_id>/as-reference")
+def api_track_as_reference(track_id: str):
+    """One of your own songs as the reference: cover it, or transcribe it."""
+    item = next((i for i in read_library() if i["id"] == track_id), None)
+    path = track_file(item) if item else None
+    if not path or not path.is_file():
+        return jsonify({"error": "That song's audio is missing."}), 404
+    try:
+        return jsonify({"ok": True, "name": send_reference(path, path.name),
+                        "title": item.get("title", "")})
+    except ComfyError as exc:
+        return jsonify({"error": str(exc)}), 503
 
 
 # --------------------------------------------------------------------------- #
