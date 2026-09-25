@@ -36,6 +36,28 @@ def pieces(text, size=17):
     return [text[i:i + size] for i in range(0, len(text), size)]
 
 
+def reharm(model, body):
+    """A reharmonization of whatever score was sent.
+
+    reharm       new chords, melody untouched
+    reharm-bad   moves a melody note, every time
+    reharm-fix   moves a melody note first, gets it right when told
+    """
+    messages = body.get("messages") or [{"content": body.get("system", "")}]
+    ask = messages[-1]["content"]
+    if isinstance(ask, list):
+        ask = " ".join(part.get("text", "") for part in ask)
+    score = ask.split("Score:\n", 1)[1].split("\n\nYour previous", 1)[0]
+    good = score.replace('"Em"', '"Am7"').replace('"D"d32', '"D7"d32')
+    retry = "previous answer was rejected" in ask
+    bad = score.replace("B8", "A8", 1)
+    use = good if model == "reharm" or (model == "reharm-fix" and retry) else bad
+    return ("STYLE: English, jazz ballad, brushed drums, upright bass\n"
+            "CHANGES:\n- verse bar 1: Em -> Am7 under the held C\n"
+            "- chorus bar 2: D -> D7 into the next phrase\n"
+            "ABC:\n" + use)
+
+
 class Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
 
@@ -91,6 +113,8 @@ class Handler(BaseHTTPRequestHandler):
         if model == "fail401":
             return self._json(401, {"error": {"message": "Incorrect API key"}})
         text = BARE if model == "bare" else SONG
+        if model.startswith("reharm"):
+            text = reharm(model, body)
         if self.path.startswith("/v1/chat/completions"):
             return self._openai(model, text)
         if self.path.startswith("/v1/messages"):

@@ -390,6 +390,107 @@ class ComfyClient:
                     return item
         return ""
 
+    def _transcriber(self, g: dict, p: dict) -> tuple[list, str]:
+        """LoadAudio → AudioEncoderLoader → SheetSage2AudioToABC, into g.
+
+        Returns the score's link and the mode it was transcribed in. What the
+        transcription takes is melody alone, or melody with its chords —
+        SheetSage's own two modes. There is no rhythm-only mode in the node;
+        the score's timing rides along with whichever of these is chosen.
+        """
+        encoders = self.audio_encoders()
+        enc = next((e for e in encoders if "sheetsage" in e.lower()),
+                   encoders[0] if encoders else None)
+        if not enc:
+            raise ComfyError(
+                "Cover mode needs sheetsage2_bf16.safetensors in "
+                "ComfyUI/models/audio_encoders. Enable the cover model in "
+                "Settings and run setup again."
+            )
+        g["20"] = self._node("LoadAudio", {
+            "audio": {"names": ["audio"], "value": p["reference_audio"],
+                      "required": True},
+        })
+        g["18"] = self._node("AudioEncoderLoader", {
+            "name": {"names": ["audio_encoder_name"], "value": enc,
+                     "required": True},
+        })
+        cover = p.get("cover_mode")
+        cover = cover if cover in ("melody", "full") else "melody"
+        g["19"] = self._node("SheetSage2AudioToABC", {
+            "encoder": {"names": ["audio_encoder"], "value": ["18", 0],
+                        "required": True},
+            "audio": {"names": ["audio"], "value": ["20", 0], "required": True},
+            "mode": {"names": ["mode"], "value": cover},
+        })
+        return ["19", 0], cover
+
+    def _planner(self, g: dict, p: dict, seed: int, mode: str, style: str,
+                 lyrics: str) -> list:
+        """YuE2GenerateABC, into g, reading the checkpoint loader at "15"."""
+        g["23"] = self._node("YuE2GenerateABC", {
+            "clip": {"names": ["clip"], "value": ["15", 1], "required": True},
+            "style": {"names": ["style", "style_prompt", "prompt", "genre"],
+                      "value": style, "required": True},
+            "lyrics": {"names": ["lyrics", "lyric", "text"], "value": lyrics,
+                       "required": True},
+            "seed": {"names": ["seed", "noise_seed"], "value": seed},
+            "mode": {"names": ["mode", "abc_mode", "plan_mode"], "value": mode},
+            "max_tokens": {"names": ["max_abc_tokens", "max_tokens",
+                                     "max_new_tokens"],
+                           "value": int(p.get("abc_tokens") or 8192)},
+        })
+        return ["23", 0]
+
+    def can_plan(self) -> dict:
+        """What a plan-only prompt can do on this engine. It is read back
+        through PreviewAny, so without that node there is no plan to show."""
+        schema = self.schema()
+        preview = "PreviewAny" in schema
+        return {"plan": preview and "YuE2GenerateABC" in schema,
+                "transcribe": preview and "SheetSage2AudioToABC" in schema
+                and "AudioEncoderLoader" in schema and "LoadAudio" in schema}
+
+    def build_plan_prompt(self, p: dict) -> dict:
+        """The first pass alone: a score, no audio.
+
+        kind "plan" asks YuE2GenerateABC for a melody plan from style and
+        lyrics; kind "transcribe" asks SheetSage2 for the score of a reference
+        recording. Either way the ABC comes back through PreviewAny, to be
+        compared, edited, and rendered later by build_prompt as a literal
+        score — one acoustic pass for the plan that was chosen, instead of a
+        new creative roll for every try.
+        """
+        self.ensure_supported()
+        kind = p.get("kind") if p.get("kind") in ("plan", "transcribe") else "plan"
+        able = self.can_plan()
+        if not able[kind]:
+            raise ComfyError(
+                "This ComfyUI cannot hand a score back on its own: planning "
+                "first needs the PreviewAny node"
+                + (" and SheetSage2" if kind == "transcribe" else "")
+                + ". Update ComfyUI, or make the song in one pass.")
+        seed = int(p.get("seed") or random.randint(0, 2**31 - 1))
+        g: dict = {}
+        if kind == "transcribe":
+            if not p.get("reference_audio"):
+                raise ComfyError("Attach a recording to transcribe first.")
+            link, mode = self._transcriber(g, p)
+            preview = self._add_preview(g, "21", link)
+            ckpt = ""
+        else:
+            ckpt = self.pick_checkpoint(p.get("ckpt", ""))
+            g["15"] = self._node("CheckpointLoaderSimple", {
+                "ckpt": {"names": ["ckpt_name"], "value": ckpt, "required": True},
+            })
+            mode = p.get("mode") if p.get("mode") in ("full", "melody") else "full"
+            lyrics = "" if p.get("instrumental") else (p.get("lyrics") or "").strip()
+            link = self._planner(g, p, seed, mode,
+                                 (p.get("style") or "").strip(), lyrics)
+            preview = self._add_preview(g, "14", link)
+        return {"prompt": g, "seed": seed, "ckpt": ckpt, "kind": kind,
+                "mode": mode, "preview": preview}
+
     def build_prompt(self, p: dict) -> dict:
         """p: style, lyrics, duration, mode, steps, cfg, sampler, scheduler,
         seed, ckpt, use_abc, instrumental, tile_size, overlap, format,
@@ -420,58 +521,15 @@ class ComfyClient:
             # generate: feed it straight in and skip the planning stage.
             abc_link = abc_text
         elif p.get("reference_audio"):
-            # Cover mode: transcribe the reference melody to ABC.
-            encoders = self.audio_encoders()
-            enc = next((e for e in encoders if "sheetsage" in e.lower()),
-                       encoders[0] if encoders else None)
-            if not enc:
-                raise ComfyError(
-                    "Cover mode needs sheetsage2_bf16.safetensors in "
-                    "ComfyUI/models/audio_encoders. Enable the cover model in "
-                    "Settings and run setup again."
-                )
-            g["20"] = self._node("LoadAudio", {
-                "audio": {"names": ["audio"], "value": p["reference_audio"],
-                          "required": True},
-            })
-            g["18"] = self._node("AudioEncoderLoader", {
-                "name": {"names": ["audio_encoder_name"], "value": enc,
-                         "required": True},
-            })
-            # What the transcription takes from the reference: melody alone,
-            # or melody with its chords — SheetSage's own two modes. There is
-            # no rhythm-only mode in the node; the score's timing rides along
-            # with whichever of these is chosen.
-            cover = p.get("cover_mode")
-            cover = cover if cover in ("melody", "full") else "melody"
-            g["19"] = self._node("SheetSage2AudioToABC", {
-                "encoder": {"names": ["audio_encoder"], "value": ["18", 0],
-                            "required": True},
-                "audio": {"names": ["audio"], "value": ["20", 0], "required": True},
-                "mode": {"names": ["mode"], "value": cover},
-            })
-            # The node's own doc says to run the music node in the matching
-            # mode — "full" against a melody-only score asks for chords the
-            # notation never had, and the other way round drops chords that
-            # are right there in it.
-            mode = cover
-            abc_link = ["19", 0]
+            # Cover mode: transcribe the reference melody to ABC. The node's
+            # own doc says to run the music node in the matching mode — "full"
+            # against a melody-only score asks for chords the notation never
+            # had, and the other way round drops chords that are right there.
+            abc_link, mode = self._transcriber(g, p)
             abc_node = self._add_preview(g, "21", abc_link)
         elif p.get("use_abc", True):
             # Text-to-music with symbolic planning.
-            g["23"] = self._node("YuE2GenerateABC", {
-                "clip": {"names": ["clip"], "value": ["15", 1], "required": True},
-                "style": {"names": ["style", "style_prompt", "prompt", "genre"],
-                          "value": style, "required": True},
-                "lyrics": {"names": ["lyrics", "lyric", "text"], "value": lyrics,
-                           "required": True},
-                "seed": {"names": ["seed", "noise_seed"], "value": seed},
-                "mode": {"names": ["mode", "abc_mode", "plan_mode"], "value": mode},
-                "max_tokens": {"names": ["max_abc_tokens", "max_tokens",
-                                         "max_new_tokens"],
-                               "value": int(p.get("abc_tokens") or 8192)},
-            })
-            abc_link = ["23", 0]
+            abc_link = self._planner(g, p, seed, mode, style, lyrics)
             abc_node = self._add_preview(g, "14", abc_link)
 
         music_wanted = {

@@ -30,6 +30,7 @@ MODULES = [
     ("setup", "finding Python, addresses, models and downloads"),
     ("api", "the HTTP surface, end to end"),
     ("lyrics", "the lyric writer: parsing, keys, and a stand-in model"),
+    ("scores", "native ABC, plan first, transcribed covers, melody-kept edits"),
     ("engine", "taking the port back, restarting, and the boot engine"),
     ("hardening", "hostile input and damaged state"),
     ("load", "many things at once, and what is left behind"),
@@ -45,7 +46,7 @@ def gate() -> tuple[int, list[str]]:
     """
     passed, failures = 0, []
     sources = ["server.py", "comfy.py", "bootstrap.py", "manager.py",
-               "lyricist.py"]
+               "lyricist.py", "scores.py", "yue2_abc.py"]
     done = subprocess.run([sys.executable, "-m", "py_compile", *sources],
                           cwd=ROOT, capture_output=True, text=True)
     if done.returncode == 0:

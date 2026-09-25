@@ -128,6 +128,37 @@ def ws_send(obj):
                 WS_CLIENTS.remove(sock)   # ComfyUI executes one prompt at a time
 
 
+def native_score(graph, preview):
+    """A score in YuE2's native two-voice form, as the real nodes write it.
+
+    The planner's seed picks the second note, so plans made with different
+    seeds really differ; "full" carries chords and "melody" does not, which is
+    the difference between the two modes of both the planner and SheetSage2.
+    """
+    source = graph.get(str((preview["inputs"].get("source") or ["", 0])[0]), {})
+    inputs = source.get("inputs", {})
+    full = inputs.get("mode", "full") == "full"
+    second = "defgab"[int(inputs.get("seed") or 0) % 6]
+    tempo = 76 if source.get("class_type") == "SheetSage2AudioToABC" else 88
+    c = (lambda name: f'"{name}"') if full else (lambda name: "")
+    return "\n".join([
+        "X:1", "T:", "M:4/4", "L:1/32", f"Q:1/4={tempo}",
+        'V: Vocal clef=treble name="Vocal Melody" snm="Vocal"',
+        'V: Ins clef=treble name="Ins Melody" snm="Inst."',
+        "K:G",
+        "% verse",
+        "V: Vocal",
+        f"{c('G')}B8{second}8{c('Em')}c8A8|{c('C')}G16{c('D')}A16|",
+        "V: Ins",
+        "Z2|",
+        "% chorus",
+        "V: Vocal",
+        f"{c('G')}d8d8{c('C')}e8e8|{c('D')}d32|",
+        "V: Ins",
+        "z16G16|B32|",
+    ]) + "\n"
+
+
 def execute(pid, graph):
     with RUN_LOCK:                      # wait our turn, like the real queue
         with LOCK:
@@ -180,7 +211,7 @@ def _execute(pid, graph):
                                  "subfolder": "audio", "type": "output"}]}}
     for nid, node in graph.items():
         if node["class_type"] == "PreviewAny":
-            outputs[nid] = {"text": ["X:1\nT:Mock score\nK:C\nCDEF|"]}
+            outputs[nid] = {"text": [native_score(graph, node)]}
     with LOCK:
         QUEUE_RUNNING.remove(pid)
         HISTORY[pid] = {"status": {"status_str": "success", "messages": []},

@@ -91,7 +91,15 @@ Score panel.
 
 ---
 
-## 3. ABC melody input
+## 3. ABC melody input: mostly done
+
+**Done:** `yue2_abc.py` (YuE's own helper, vendored unchanged) and
+`scores.py`; `/api/abc/inspect`, `/api/abc/strip-chords` (all or vocal-only)
+and `/api/abc/compare`; a live check in the Score box, which advises and never
+blocks; *Check melody kept*; *Reharmonize…*; and *Fit to score* in the lyric
+writer. **Still open:** transpose and tempo tools, uploading an `.abc` file,
+and MIDI → ABC.
+
 
 The Score box already takes a literal score (`comfy.py`: a score in the box
 wins and replaces the generator). What is missing is **checking** and
@@ -203,13 +211,13 @@ ComfyUI too.
 | Step | What | New dependencies | Effort |
 |---|---|---|---|
 | 1 | ~~Lyric writer~~ | `anthropic` | **done** |
-| 2 | ABC check and Score tools (transpose, tempo, melody only) | none: vendored `yue2_abc.py` (Apache-2.0) | small–medium |
+| 2 | ~~ABC check, strip chords, compare~~ — transpose and tempo still open | none: vendored `yue2_abc.py` (Apache-2.0) | **mostly done** |
 | 3 | Loudness normalise and tag on export | none (ffmpeg) | small |
 | 4 | Master presets (compressor, EQ, limiter via ffmpeg) | none | medium |
-| 5 | Two-pass cover with instrumental rewrite | none | medium |
+| 5 | ~~Two-pass cover~~ (*Transcribe the recording*) — instrumental rewrite still open | none | **half done** |
 | 6 | FLUX.2 cover art (optional ~8–16 GB download) | none (native nodes) | medium |
 | 7 | Shimmer repair, then auto-EQ and artifact reduction | numpy, scipy | medium |
-| 8 | LLM cover rewrite with deterministic fallback | none beyond step 1 | medium–large |
+| 8 | ~~LLM reharmonization, checked note for note~~ — freedom-slider cover rewrite still open | none beyond step 1 | **half done** |
 | 9 | Whisper original lyrics and vocal check | faster-whisper (opt-in) | large |
 | — | FlashSR | — | skip |
 
@@ -228,3 +236,34 @@ ComfyUI too.
   change is needed.
 - Licences: the toolkit is MIT (notice in `THIRD_PARTY.md`); `yue2_abc.py` and
   the ABC reference docs are Apache-2.0 from YuE; FlashSR has no clear licence.
+
+## 9. How YuE Studio lines up with the YuE2 skill
+
+The skill that defines these workflows is
+[`skills/yue2-music`](https://github.com/multimodal-art-projection/YuE/tree/main/skills/yue2-music)
+in the YuE repository.
+
+| Skill workflow | In YuE Studio |
+|---|---|
+| `cot="full"` / `"melody"` / `"off"` | *Melody plan*: Full, Melody, Off |
+| Plan, then render (`run_yue2.py plan`) | *Plan first* → *Use* → Create. It uses the native `YuE2GenerateABC` with `PreviewAny`, no custom pack. |
+| Cover a recording: SheetSage2 → inspect and correct → strip chords → `melody` | *Transcribe the recording* → edit → *Strip chords* → Create (Melody). A one-pass cover is still available. |
+| Cover an ABC melody | Paste it into the Score box → *Strip chords* → Melody |
+| Change harmony, style or lyrics, then regenerate | *Render again from its plan*, change one thing, Create |
+| `abc_tools.py inspect` / `strip-chords --keep-voice` / `compare --voices --allow-tempo-change` | The live check, *Strip chords* / *Vocal line only*, *Check melody kept*, and Compare (tempo change allowed) |
+| Agentic reharmonization under a contract, reviewed | *Reharmonize…* with the sung melody or both melodies fixed. The result is proved with `compare`; a failure is sent back once, then refused. |
+| Singable lyric adaptation | *Fit to score*: sung-note counts per section go to the writer, and the answer gets a per-section syllable check |
+| Reproducible listening comparison (`listen.py`) | *Compare with…*: two players, full records and marked differences |
+
+**Not covered, and why:**
+- **Decoder switching** (`YuE2-Vae` vs `-legacy`) and **cached-latent
+  decoding**: ComfyUI's graph does not expose latents between runs.
+- **Phoneme sidecars**: YuE2 has no phoneme input. The skill says to keep a
+  sidecar outside the model, which remains possible by hand.
+- **ASR / PER and SongBench scoring**: these need separate evaluation
+  packages.
+- **The reviewer-agent pass**: the note-for-note check stands in for its
+  hard constraint, but harmonic quality is still judged by listening.
+- **`YuE2RenderPlan`**: this node comes from a custom-node pack, not from
+  ComfyUI. Rule 6 keeps YuE Studio off such packs, and the native nodes
+  already give the same split between plan and render.

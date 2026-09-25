@@ -207,10 +207,44 @@
     refusal fallback on for the models that take it; every other service is
     plain OpenAI-compatible chat completions.
 
+29. **Plan first is the first pass alone, and it makes no audio.**
+    `build_plan_prompt()` is `CheckpointLoaderSimple → YuE2GenerateABC →
+    PreviewAny`, or `LoadAudio → AudioEncoderLoader → SheetSage2AudioToABC →
+    PreviewAny` for a recording, built by the same `_planner()` /
+    `_transcriber()` that `build_prompt()` uses, so a plan and a render can
+    never drift apart. The chosen plan is rendered by the ordinary
+    `/api/generate` as a literal score. Plans run as a Task (rule 9) and are
+    waited on until ComfyUI no longer has them anywhere, never for a set
+    time (rule 27). Several plans use consecutive seeds, so a set can be made
+    again exactly. A recording is transcribed once. Without `PreviewAny`
+    (`can_plan`), planning is unavailable and songs are still made in one
+    pass. `YuE2RenderPlan` is a custom-node pack's node, not ComfyUI's: do
+    not depend on it (rule 6); the native nodes already split plan from
+    render.
+
+30. **A score check advises; it never gates.** `yue2_abc.py` is YuE's own
+    helper, vendored unchanged (Apache-2.0); edit around it in `scores.py`,
+    never in it. It fails closed on anything outside the native dialect, and
+    the test suite's own short scores are outside it — so the Score box
+    shows the reason and sends the score anyway. What *is* gated is
+    `run_reharm()`: a model's reharmonization is used only if
+    `scores.compare()` shows every sounding note of the kept voices
+    unchanged (pitch, onset and duration after ties). One repair round with
+    the exact differences, then a refusal, and the Score box is left as it
+    was. Compare events, never text.
+
+31. **A song records what would make it again.** The track keeps its seed,
+    score and where the score came from (`abc_source`: planned, transcribed,
+    score, none), mode, cover mode and sampling (`top_p`, `top_k`,
+    `repetition_penalty`, steps, scheduler). **Render again from its plan**
+    loads all of it, and **Compare** shows two songs' records side by side.
+    Drop a field and a render stops being reproducible.
+
 ## Validation gate — run after any edit
 
 ```bash
-python -m py_compile server.py comfy.py bootstrap.py manager.py lyricist.py
+python -m py_compile server.py comfy.py bootstrap.py manager.py lyricist.py \
+    scores.py yue2_abc.py
 python - <<'PY'                       # extract inline JS, then: node --check
 import re, pathlib
 src = pathlib.Path('web/index.html').read_text()
@@ -223,14 +257,14 @@ node --check /tmp/app.js
 A missing function declaration in the inline script kills all interactivity
 silently — `node --check` is not optional.
 
-`python tests/run.py` runs that gate and everything else (614 checks, about
+`python tests/run.py` runs that gate and everything else (698 checks, about
 four minutes); `python tests/run.py gate` is just the block above. Run the
 whole suite before pushing. Tests take their own port and their own
 `YUE_STUDIO_DATA` directory, so they never touch a real library. Four of them
 need `ffmpeg` on PATH and fail without it — that is the machine, not the code.
-The last 88 are the browser group and need Playwright (`pip install -r
+The last 102 are the browser group and need Playwright (`pip install -r
 requirements-dev.txt && python -m playwright install chromium`); without it
-that group steps aside and the run stops at 526, which is a short count and
+that group steps aside and the run stops at 596, which is a short count and
 not a pass to compare against.
 
 `python tests/run.py engine` is the group that owns real ComfyUI processes:
