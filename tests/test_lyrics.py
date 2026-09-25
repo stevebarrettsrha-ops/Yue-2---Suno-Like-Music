@@ -91,6 +91,21 @@ def unit(s: Suite) -> None:
     s.check("an instrumental asks for tags only and names no language",
             "only section tags" in prompt and "French" not in prompt, prompt)
 
+    # -- how long a song it is asked for ---------------------------------------
+    auto = lyricist.user_prompt(lyricist.clean_request({
+        "brief": "x", "duration": 360, "auto": True}))
+    s.check("Auto asks for a typical song, not the engine's six-minute ceiling",
+            "typical song" in auto and "180 seconds" in auto
+            and "360" not in auto, auto[-160:])
+    picked = lyricist.user_prompt(lyricist.clean_request({
+        "brief": "x", "duration": 300}))
+    s.check("a length someone chose is a limit, not a quota",
+            "up to 5 min 00 s (300 seconds)" in picked and "not a quota" in picked,
+            picked[-160:])
+    s.check("and the writer is told longer songs take longer to render",
+            "never exceed it" in lyricist.SYSTEM_PROMPT
+            and "longer to render" in lyricist.SYSTEM_PROMPT)
+
     # -- the key -------------------------------------------------------------
     cfg: dict = {}
     s.equal("an address with a key in it is refused",
@@ -249,6 +264,39 @@ def run(slow: bool = False) -> Suite:
             f"{api}/api/tasks?id={first}", timeout=5).json()["state"]
             == "cancelled", 10, 0.2)
         s.check("Stop ends a write part way", stopped)
+
+        # -- a local writer gives the GPU back ------------------------------
+        requests.post(f"{api}/api/llm/settings", json={
+            "provider": "ollama", "base": model.url + "/v1",
+            "model": "qwen3:8b"}, timeout=10)
+        t = write(api, {"brief": "x"})
+        sent = requests.get(model.url + "/_last", timeout=5).json()
+        s.check("after a write, Ollama is told to unload its model",
+                t.get("state") == "done" and sent["path"] == "/api/generate"
+                and sent["body"] == {"model": "qwen3:8b", "keep_alive": 0},
+                str(sent)[:160])
+        requests.post(f"{api}/api/llm/settings", json={"model": "fail401"},
+                      timeout=10)
+        write(api, {"brief": "x"})
+        sent = requests.get(model.url + "/_last", timeout=5).json()
+        s.check("and after a write that failed, too",
+                sent["path"] == "/api/generate", sent["path"])
+        requests.post(f"{api}/api/llm/settings", json={
+            "provider": "lmstudio", "base": model.url + "/v1",
+            "model": "qwen3:8b"}, timeout=10)
+        write(api, {"brief": "x"})
+        sent = requests.get(model.url + "/_last", timeout=5).json()
+        s.check("LM Studio is asked to let go of a model it loaded on demand",
+                sent["path"] == "/v1/chat/completions"
+                and sent["body"].get("ttl") == lyricist.LMSTUDIO_TTL,
+                str(sent["body"].get("ttl")))
+        requests.post(f"{api}/api/llm/settings", json={
+            "provider": "custom", "base": model.url + "/v1",
+            "model": "qwen3:8b"}, timeout=10)
+        write(api, {"brief": "x"})
+        sent = requests.get(model.url + "/_last", timeout=5).json()
+        s.check("any other server is sent no field it did not ask for",
+                "ttl" not in sent["body"] and sent["path"] == "/v1/chat/completions")
 
         # -- Claude, through the SDK, against the stand-in -------------------
         r = requests.post(f"{api}/api/llm/settings", json={

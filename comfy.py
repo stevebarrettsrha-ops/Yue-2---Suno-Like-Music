@@ -22,6 +22,7 @@ Graph (same shape as the yue2_full workflow):
 from __future__ import annotations
 
 import json
+import mimetypes
 import random
 import threading
 import time
@@ -713,6 +714,21 @@ class ComfyClient:
                   "type": item.get("type", "output")}
         return requests.get(f"{self.url}/view", params=params, stream=True,
                             timeout=120)
+
+    def upload_path(self, path, filename: str) -> str:
+        """Send a file YuE Studio keeps (a saved reference, a finished song)
+        to ComfyUI's input folder, and return the name LoadAudio takes."""
+        mime = mimetypes.guess_type(filename)[0] or "audio/wav"
+        with open(path, "rb") as fh:
+            files = {"image": (filename, fh, mime)}
+            r = requests.post(f"{self.url}/upload/image", files=files,
+                              data={"type": "input", "overwrite": "true"},
+                              timeout=180)
+        r.raise_for_status()
+        data = r.json()
+        name = data.get("name") or filename
+        sub = data.get("subfolder") or ""
+        return f"{sub}/{name}" if sub else name
 
     def upload_audio(self, file_storage) -> str:
         files = {"image": (file_storage.filename, file_storage.stream,

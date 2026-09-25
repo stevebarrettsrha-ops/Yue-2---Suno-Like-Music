@@ -152,13 +152,55 @@
             background:var(--panel);border:1px solid var(--line-soft);font-size:12.5px;
             color:var(--muted);max-width:230px}
   .modelsel select{background:transparent;border:0;padding:0;max-width:170px;font-size:12.5px}
-  .addrow{display:flex;gap:10px;padding:14px 26px 4px;flex-wrap:wrap}
-  .addbtn{flex:1;min-width:120px;display:flex;align-items:center;justify-content:center;gap:7px;
-          padding:11px;border-radius:12px;background:var(--panel);
-          border:1px solid var(--line-soft);color:var(--muted);font-size:13px}
-  .addbtn:hover{border-color:#34343d;color:var(--text)}
-  .addbtn.on{border-color:var(--accent);color:#cdbcff;background:rgba(124,77,255,.1)}
+  /* Audio | Voice | Inspo: one bar, three doors, each opening its own panel */
+  .addrow{display:flex;margin:14px 26px 4px;background:var(--panel);
+          border:1px solid var(--line-soft);border-radius:14px;overflow:hidden}
+  .addbtn{flex:1;min-width:0;display:flex;align-items:center;justify-content:center;gap:7px;
+          padding:12px 8px;color:#d6d6dc;font-size:13.5px;font-weight:500;white-space:nowrap;
+          overflow:hidden;text-overflow:ellipsis}
+  .addbtn + .addbtn{border-left:1px solid var(--line-soft)}
+  .addbtn:hover{background:#1c1c22;color:var(--text)}
+  .addbtn.on{color:#cdbcff;background:rgba(124,77,255,.1)}
+  .addbtn.open{background:#222229;color:var(--text)}
   .addbtn:disabled{opacity:.45;cursor:not-allowed}
+  .addpanel{margin:10px 26px 0;background:var(--panel);border:1px solid var(--line-soft);
+            border-radius:14px;padding:14px 15px}
+  .addpanel .phead{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:12px}
+  .addpanel .lrow{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:10px}
+  .addpanel .note{margin-top:12px}
+  .attached{display:flex;gap:8px;align-items:center;margin-left:auto;font-size:12.5px;
+            color:#cdbcff;min-width:0}
+  .attached b{max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .dropzone{border:1.5px dashed #3a3a44;border-radius:12px;padding:26px 14px;text-align:center;
+            color:var(--muted);display:flex;flex-direction:column;gap:8px;align-items:center}
+  .dropzone.over{border-color:var(--accent);background:rgba(124,77,255,.06)}
+  .dropzone b{color:var(--text);font-weight:500}
+  .recrow{display:flex;gap:14px;align-items:center}
+  .recrow b{display:block;font-size:20px;font-variant-numeric:tabular-nums}
+  .recrow span{font-size:12.5px;color:var(--dim)}
+  .recbtn{width:54px;height:54px;border-radius:50%;background:#2a1a20;border:2px solid #ff4d6d;
+          display:grid;place-items:center;flex:none}
+  .recbtn i{width:20px;height:20px;border-radius:50%;background:#ff4d6d;transition:all .15s}
+  .recbtn.on i{border-radius:4px;width:18px;height:18px}
+  .recbtn.on{animation:recpulse 1.4s ease-in-out infinite}
+  @keyframes recpulse{50%{box-shadow:0 0 0 8px rgba(255,77,109,.15)}}
+  #recPreview{width:100%;margin-top:12px}
+  .refrow{display:flex;align-items:center;gap:10px;padding:7px 6px;border-radius:10px}
+  .refrow:hover{background:#1b1b21}
+  .refrow .n{flex:1;min-width:0}
+  .refrow .n b{display:block;font-size:13px;font-weight:500;white-space:nowrap;overflow:hidden;
+               text-overflow:ellipsis}
+  .refrow .n span{display:block;font-size:12px;color:var(--dim);white-space:nowrap;
+                  overflow:hidden;text-overflow:ellipsis}
+  .refrow .btn{flex:none}
+  .listhead{font-size:12px;color:var(--dim);text-transform:uppercase;letter-spacing:.06em;
+            margin:14px 6px 4px}
+  .lyrfoot{display:flex;justify-content:center;padding:2px 0 14px}
+  .sparkle{width:42px;height:42px;border-radius:50%;border:1px solid #3d3d47;background:#1e1e25;
+           display:grid;place-items:center;color:#ececf2;
+           box-shadow:0 0 0 5px rgba(255,255,255,.03)}
+  .sparkle:hover{border-color:var(--accent);color:#fff}
+  .sparkle svg{width:18px;height:18px}
 
   /* option rows */
   .orow{display:flex;align-items:center;gap:12px;margin:0 15px 8px;padding:11px 14px;
@@ -385,7 +427,8 @@
     .work{grid-row:3;grid-column:1;max-height:36vh}
     .playerbar{grid-row:4;grid-column:1;gap:8px;padding:0 10px}
     .pright input[type=range],.transport .iconbtn{display:none}
-    .page,.chead,.addrow,.createbar{padding-left:14px;padding-right:14px}
+    .page,.chead,.createbar{padding-left:14px;padding-right:14px}
+    .addrow,.addpanel{margin-left:14px;margin-right:14px}
     .np{width:auto;flex:1}
   }
   @media (prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}
@@ -472,11 +515,77 @@
         <input type="file" id="refFile" accept="audio/*" hidden />
       </div>
 
+      <!-- Audio: upload, record, browse -->
+      <div class="addpanel" id="audioPanel" hidden>
+        <div class="phead">
+          <div class="segmented" id="segAudioTab">
+            <button class="on" data-v="upload">Upload</button>
+            <button data-v="record">Record</button>
+            <button data-v="browse">Browse</button>
+          </div>
+          <div class="attached" id="refAttached" hidden>Using <b id="refAttachedName"></b>
+            <button class="btn thin" id="btnRefTranscribe"
+              title="Read its score now, to check and edit before rendering">Transcribe</button>
+            <button class="btn thin" id="btnRefRemove">Remove</button></div>
+        </div>
+        <div id="audioUpload">
+          <div class="dropzone" id="dropZone"><b>Drop a song here</b><span>wav, flac, mp3, ogg, m4a</span>
+            <button class="btn thin" id="btnChooseFile">Choose a file</button></div>
+        </div>
+        <div id="audioRecord" hidden>
+          <div class="recrow">
+            <button class="recbtn" id="btnRec" title="Record from your microphone"><i></i></button>
+            <div><b id="recTime">0:00</b><span id="recNote">Press to record from your microphone — up to five minutes.</span></div>
+          </div>
+          <audio id="recPreview" controls hidden></audio>
+          <div class="lrow">
+            <button class="btn go thin" id="btnRecUse" hidden>Use this recording</button>
+            <button class="btn thin" id="btnRecAgain" hidden>Record again</button>
+          </div>
+        </div>
+        <div id="audioBrowse" hidden>
+          <input type="text" id="refSearch" class="search" placeholder="Search your recordings, uploads and songs" />
+          <div id="refList"></div>
+        </div>
+        <p class="note">What YuE2 takes from audio is the tune — the melody, and with
+          <i>Melody + chords</i> the harmony — read by SheetSage2. Not the sound, the singer
+          or the mix.</p>
+      </div>
+
+      <!-- Voice: who sings, and your own tune -->
+      <div class="addpanel" id="voicePanel" hidden>
+        <div class="phead">
+          <div class="segmented" id="segVoice">
+            <button class="on" data-v="">Any voice</button><button data-v="male">Male</button>
+            <button data-v="female">Female</button><button data-v="instrumental">No vocals</button>
+          </div>
+        </div>
+        <input type="text" id="voiceDesc" class="search"
+          placeholder="Describe the voice — warm raspy alto, breathy falsetto, a gospel choir on the chorus" />
+        <div class="lrow">
+          <button class="btn thin" id="btnSingIt"
+            title="Record yourself singing or humming; the tune becomes the song's melody">Sing or hum your melody</button>
+        </div>
+        <p class="note">YuE2 sings in the voice you describe in words — it cannot copy the
+          sound of a recorded voice. What it can take from your singing is the tune: record it,
+          and it becomes the melody the song is built on.</p>
+      </div>
+
+      <!-- Inspo: start from something -->
+      <div class="addpanel" id="inspoPanel" hidden>
+        <div class="phead" style="margin-bottom:0">
+          <input type="text" id="inspoSearch" class="search" style="flex:1;min-width:180px"
+            placeholder="Search your songs for a starting point" />
+          <button class="btn thin" id="btnInspoRandom" title="A fresh style, picked at random">Surprise me</button>
+        </div>
+        <div id="inspoFromRec"></div>
+        <div id="inspoList"></div>
+      </div>
+
       <div class="page" style="padding:14px 26px 0">
         <details class="card" id="cardLyrics" open>
           <summary><svg class="chev" viewBox="0 0 24 24"><path d="m9 6 6 6-6 6"/></svg>Lyrics
             <div class="tools">
-              <button class="iconbtn accent" id="btnLyricist" title="Write lyrics with a language model"><svg viewBox="0 0 24 24"><path d="M4 20l4-1 10-10-3-3L5 16zM13 7l3 3M18 3l.8 1.7L20.5 5.5l-1.7.8L18 8l-.8-1.7-1.7-.8 1.7-.8z"/></svg></button>
               <button class="iconbtn" id="btnUndo" title="Undo"><svg viewBox="0 0 24 24"><path d="M4 9h11a4 4 0 0 1 0 8h-5M4 9l4-4M4 9l4 4"/></svg></button>
               <button class="iconbtn" id="btnRedo" title="Redo"><svg viewBox="0 0 24 24"><path d="M20 9H9a4 4 0 0 0 0 8h5M20 9l-4-4M20 9l-4 4"/></svg></button>
               <button class="iconbtn" id="btnStructure" title="Insert song structure"><svg viewBox="0 0 24 24"><path d="M4 6h16M4 12h10M4 18h16"/></svg></button>
@@ -484,6 +593,8 @@
             </div></summary>
           <textarea id="lyrics" spellcheck="false"
             placeholder="Start writing lyrics, or leave this empty for instrumental"></textarea>
+          <div class="lyrfoot"><button class="sparkle" id="btnLyricist" title="Write lyrics for me">
+            <svg viewBox="0 0 24 24"><path d="M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9zM19 15l.9 2.1L22 18l-2.1.9L19 21l-.9-2.1L16 18l2.1-.9zM5 2l.7 1.3L7 4l-1.3.7L5 6l-.7-1.3L3 4l1.3-.7z"/></svg></button></div>
           <p class="note" id="lyricsNote" hidden></p>
           <div class="lyricist" id="lyricist" hidden>
             <textarea id="lyrBrief" spellcheck="false"
@@ -637,6 +748,8 @@
       </div>
 
       <div class="createbar">
+        <button class="qbtn" id="btnClearAll" title="Start over — clear lyrics, style, title, score and audio">
+          <svg viewBox="0 0 24 24" style="width:17px;height:17px"><path d="M5 7h14M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/></svg></button>
         <button class="qbtn" id="btnCount" title="How many songs per press">×1</button>
         <button class="primary" id="btnCreate">
           <svg viewBox="0 0 24 24" style="width:16px;height:16px"><path d="M9 18V6l10-2v12"/><circle cx="7" cy="18" r="2"/><circle cx="17" cy="16" r="2"/></svg>
@@ -835,7 +948,10 @@
     <h2>Lyric writer <span class="note">optional</span></h2>
     <p class="note" style="margin:0 0 12px">A chat model that writes lyrics, a style
       and a title from a line about the song. Ollama and LM Studio run on this
-      computer and need no key; cloud services do.</p>
+      computer and need no key; cloud services do. A local writer shares the
+      graphics card with YuE2: Ollama is told to unload after each write, but a
+      model you load by hand in LM Studio stays in memory and slows songs down
+      until you unload it.</p>
     <div class="grid2">
       <div><label class="note" for="llmProvider">Service</label>
         <select id="llmProvider" class="search"></select></div>
@@ -995,7 +1111,7 @@ function wireSeg(id, onChange) {
 function readOpts() {
   const automatic = (S.status && S.status.recommended_duration) || 180;
   const picked = $("duration").value;
-  return { vocal:segGet("segVocal"),
+  return { vocal:segGet("segVocal"), voiceDesc:$("voiceDesc").value,
     plan:segGet("segPlan"), tiled:segGet("segTiled"),
     durationChoice:picked,
     duration:picked === "auto" ? automatic : Number(picked),
@@ -1017,6 +1133,7 @@ function loadDraft() {
   S.abcOrigin = d.abcOrigin || "";
   const o = d.opts || {};
   if (o.vocal !== undefined) segSet("segVocal", o.vocal);
+  if (o.voiceDesc) $("voiceDesc").value = o.voiceDesc;
 
   if (o.plan) segSet("segPlan", o.plan);
   if (o.tiled) segSet("segTiled", o.tiled);
@@ -1364,6 +1481,10 @@ function collectParams() {
   let style = $("style").value.trim();
   if (o.vocal === "male" && !/male vocal/i.test(style)) style += ", male vocal";
   if (o.vocal === "female" && !/female vocal/i.test(style)) style += ", female vocal";
+  // YuE2 takes the voice as words, so a description joins the style text.
+  const desc = (o.voiceDesc || "").trim();
+  if (desc && o.vocal !== "instrumental" && style.toLowerCase().indexOf(desc.toLowerCase()) < 0)
+    style += (style ? ", " : "") + desc;
   const seedRaw = $("seed").value.trim();
   const st = S.status || {};
   return {
@@ -1900,26 +2021,28 @@ function renderAttach() {
   const a = $("btnAudio");
   if (S.reference) {
     a.classList.add("on");
-    a.innerHTML = X_ICON + esc(S.refName || "Reference");
-    a.title = "Remove the reference — the next song stops being a cover.";
+    a.innerHTML = PLUS_ICON + esc(S.refName || "Reference");
+    a.title = "The next song takes its melody from this. Open to change or remove it.";
   } else {
     a.classList.remove("on");
     a.innerHTML = PLUS_ICON + "Audio";
     a.title = (S.status && S.status.has_cover_model)
-      ? "Make a cover from a reference song"
+      ? "Upload, record or browse audio to take a melody from"
       : "Needs sheetsage2_bf16.safetensors — get it on the Models page.";
   }
+  $("refAttached").hidden = !S.reference;
+  $("refAttachedName").textContent = S.refName || "";
   $("coverTake").hidden = !S.reference;
   planTools();
   const voice = segGet("segVocal");
   const v = $("btnVoice");
   const named = voice === "male" ? "Male" : voice === "female" ? "Female"
     : voice === "instrumental" ? "None" : "";
-  v.classList.toggle("on", !!named);
-  v.innerHTML = named ? PLUS_ICON + "Voice: " + named : PLUS_ICON + "Voice";
-  v.title = named
-    ? "Click to change — it cycles back to Any."
-    : "Ask for a male or female vocal.";
+  const desc = ($("voiceDesc").value || "").trim();
+  v.classList.toggle("on", !!(named || desc));
+  v.innerHTML = PLUS_ICON + (named ? "Voice: " + named : desc ? "Voice: described" : "Voice");
+  v.title = "Choose who sings, describe the voice, or sing your own melody.";
+  segSet("segVoice", voice);
 }
 
 async function refreshStatus() {
@@ -2034,17 +2157,10 @@ function wire() {
         x.setAttribute("aria-selected", String(x === b)));
       const t = b.dataset.tab;
       $("cardMore").open = t === "advanced";
-      if (t === "sounds") {
-        if ($("btnAudio").disabled)
-          toast("Cover mode needs the SheetSage2 model — get it on the Models page.", true);
-        else $("refFile").click();
-      }
+      if (t === "sounds" && ADD.open !== "audio") openAddPanel("audio");
     }));
 
-  wireSeg("segVocal", (v) => {
-    $("lyrics").disabled = v === "instrumental";
-    $("lyrics").style.opacity = v === "instrumental" ? ".45" : "1";
-    renderAttach(); });
+  wireSeg("segVocal", setVocal);
   wireSeg("segPlan", abcNote);
   wireSeg("segCover", null);
   wireSeg("segTiled", null);
@@ -2140,35 +2256,38 @@ function wire() {
     buildChips(); });
   $("btnRandomStyle").addEventListener("click", () => {
     $("style").value = randomStyle(); syncChips(); saveDraft(); });
-  $("btnInspo").addEventListener("click", () => {
+  $("btnAudio").addEventListener("click", () => openAddPanel("audio"));
+  $("btnVoice").addEventListener("click", () => openAddPanel("voice"));
+  $("btnInspo").addEventListener("click", () => openAddPanel("inspo"));
+  wireSeg("segAudioTab", audioTab);
+  wireSeg("segVoice", setVocal);
+  $("voiceDesc").addEventListener("input", () => { renderAttach(); saveDraft(); });
+  $("btnSingIt").addEventListener("click", () => {
+    ADD.recFor = "melody"; openAddPanel("audio"); audioTab("record"); });
+  $("btnChooseFile").addEventListener("click", () => $("refFile").click());
+  $("refFile").addEventListener("change", async (e) => {
+    const f = e.target.files && e.target.files[0];
+    await uploadFile(f); e.target.value = ""; });
+  const dz = $("dropZone");
+  ["dragenter","dragover"].forEach((ev) => dz.addEventListener(ev, (e) => {
+    e.preventDefault(); dz.classList.add("over"); }));
+  ["dragleave","drop"].forEach((ev) => dz.addEventListener(ev, (e) => {
+    e.preventDefault(); dz.classList.remove("over"); }));
+  dz.addEventListener("drop", (e) => uploadFile(e.dataTransfer.files && e.dataTransfer.files[0]));
+  $("btnRec").addEventListener("click", recToggle);
+  $("btnRecUse").addEventListener("click", recUse);
+  $("btnRecAgain").addEventListener("click", recToggle);
+  $("refSearch").addEventListener("input", renderRefs);
+  $("btnRefRemove").addEventListener("click", () => {
+    S.reference = null; S.refName = null; $("refNote").hidden = true;
+    renderAttach(); toast("Reference removed — songs are no longer covers."); });
+  $("btnRefTranscribe").addEventListener("click", () => {
+    $("cardAbc").open = true; startPlan("transcribe"); });
+  $("inspoSearch").addEventListener("input", renderInspo);
+  $("btnInspoRandom").addEventListener("click", () => {
     $("style").value = randomStyle(); syncChips(); saveDraft();
     toast("Style written. Edit it however you like."); });
-  $("btnVoice").addEventListener("click", () => {
-    const order = ["", "male", "female"];
-    const v = order[(order.indexOf(segGet("segVocal")) + 1) % order.length];
-    segSet("segVocal", v); saveDraft(); renderAttach();
-    toast(v === "male" ? "Asking for a male vocal."
-      : v === "female" ? "Asking for a female vocal."
-      : "No preference — the style text decides the voice."); });
-  $("btnAudio").addEventListener("click", () => {
-    if (S.reference) {
-      S.reference = null; S.refName = null; $("refNote").hidden = true;
-      renderAttach(); toast("Reference removed — songs are no longer covers.");
-      return; }
-    $("refFile").click(); });
-  $("refFile").addEventListener("change", async (e) => {
-    const f = e.target.files && e.target.files[0]; if (!f) return;
-    const fd = new FormData(); fd.append("file", f);
-    try {
-      const r = await api("/api/upload-reference", { method:"POST", body:fd });
-      S.reference = r.name; S.refName = f.name; renderAttach();
-      $("refNote").hidden = false;
-      $("refNote").textContent = "Melody taken from " + f.name +
-        ". Keep the new lines close in length to the original.";
-      toast("Reference loaded — this will be a cover.");
-    } catch (err) { toast(err.message, true); }
-    e.target.value = "";
-  });
+  $("btnClearAll").addEventListener("click", clearAll);
 
   $("homeCreate").addEventListener("click", () => {
     const v = $("homePrompt").value.trim();
@@ -2312,7 +2431,8 @@ async function writeLyrics() {
   const body = { want:want, brief:$("lyrBrief").value.trim(),
     style:$("style").value.trim(), lyrics:$("lyrics").value,
     title:$("songTitle").value.trim(), language:$("lyrLang").value.trim(),
-    vocal:o.vocal, duration:o.duration, abc:$("abc").value.trim() };
+    vocal:o.vocal, duration:o.duration, auto:o.durationChoice === "auto",
+    abc:$("abc").value.trim() };
   if (want === "fit" && !body.abc) {
     toast("Fitting lyrics needs a melody in the Score box — plan one or load a song's score.", true);
     $("cardAbc").open = true; return; }
@@ -2462,13 +2582,14 @@ function planTools() {
   $("btnTranscribe").disabled = !!PLAN.task || !able.transcribe;
   $("btnPlanStop").hidden = !PLAN.task;
 }
-async function startPlan(kind) {
+async function startPlan(kind, over) {
   if (!S.status || !S.status.ready) { openSetup(); return; }
   const p = collectParams();
   if (kind === "plan" && !p.style) { toast("Describe the style first.", true); $("style").focus(); return; }
   const body = Object.assign({}, p, { kind:kind, count:Number($("planCount").value),
-    reference_audio:S.reference || null, cover_mode:segGet("segCover") });
+    reference_audio:S.reference || null, cover_mode:segGet("segCover") }, over || {});
   if (kind === "plan" && S.reference) body.reference_audio = null;
+  PLAN.autoUse = !!(over && over.autoUse);
   try {
     const r = await api("/api/plan", { method:"POST",
       headers:{"Content-Type":"application/json"}, body:JSON.stringify(body) });
@@ -2489,6 +2610,14 @@ async function followPlan() {
     setTimeout(followPlan, 900); return;
   }
   PLAN.task = null; planTools();
+  if (t.state === "done" && PLAN.autoUse && m.kind === "transcribe" && PLAN.list.length) {
+    PLAN.autoUse = false;
+    usePlan(0);
+    $("planNote").textContent = "Your melody is in the Score box. Fit to score, in the "
+      + "lyric writer, puts words to it; Create sings it.";
+    toast("Your melody is in the Score box.");
+    return;
+  }
   if (t.state === "done") {
     $("planNote").textContent = m.kind === "transcribe"
       ? "Transcribed. Use it, check and correct it, strip the chords for a melody cover, then Create."
@@ -2659,6 +2788,239 @@ async function openCompare(a, b) {
         + (r.chords_changed ? "; " + r.chords_changed + " chord symbols differ." : "; the chords match too.")
       : "Different melodies — " + r.differences.join("; ") + ".";
   } catch (e) { note.textContent = "Their scores could not be compared: " + e.message; }
+}
+
+/* ========================= audio, voice, inspo ========================= */
+/* One bar, three doors. Audio brings in a recording to take a melody from;
+   Voice says who sings, or lets you sing the tune yourself; Inspo starts
+   from a song you already made. */
+const ADD = { open:"", recFor:"reference", refs:[] };
+const PREVIEW = new Audio();
+function openAddPanel(which) {
+  ADD.open = ADD.open === which ? "" : which;
+  [["audio","audioPanel","btnAudio"],["voice","voicePanel","btnVoice"],["inspo","inspoPanel","btnInspo"]]
+    .forEach(([k, panel, btn]) => {
+      $(panel).hidden = ADD.open !== k;
+      $(btn).classList.toggle("open", ADD.open === k);
+    });
+  if (ADD.open !== "audio") PREVIEW.pause();
+  if (ADD.open === "audio") audioTab(segGet("segAudioTab") || "upload");
+  if (ADD.open === "inspo") renderInspo();
+}
+function audioTab(v) {
+  segSet("segAudioTab", v);
+  $("audioUpload").hidden = v !== "upload";
+  $("audioRecord").hidden = v !== "record";
+  $("audioBrowse").hidden = v !== "browse";
+  if (v === "browse") loadRefs();
+  if (v === "record") $("btnRecUse").textContent = ADD.recFor === "melody"
+    ? "Turn my melody into a score" : "Use this recording";
+}
+async function sendReference(file, kind, name) {
+  const fd = new FormData(); fd.append("file", file, name || file.name || "audio");
+  fd.append("kind", kind);
+  return api("/api/references", { method:"POST", body:fd });
+}
+function attachReference(name, label) {
+  S.reference = name; S.refName = label; renderAttach();
+  $("refNote").hidden = false;
+  $("refNote").textContent = "Melody taken from " + label +
+    ". Keep the new lines close in length to the original.";
+}
+async function uploadFile(f) {
+  if (!f) return;
+  try {
+    const r = await sendReference(f, "upload");
+    attachReference(r.name, f.name);
+    toast("Reference loaded — this will be a cover.");
+  } catch (e) { toast(e.message, true); }
+}
+
+/* recording, in the browser; the server keeps it and makes it wav */
+const REC = { stream:null, rec:null, chunks:[], blob:null, t0:0, timer:null };
+async function recToggle() {
+  if (REC.rec && REC.rec.state === "recording") { REC.rec.stop(); return; }
+  if (!navigator.mediaDevices || !window.MediaRecorder) {
+    $("recNote").textContent = "This browser cannot record audio. Upload a file instead."; return; }
+  try {
+    REC.stream = await navigator.mediaDevices.getUserMedia({ audio:{
+      echoCancellation:false, noiseSuppression:false, autoGainControl:false } });
+  } catch (e) {
+    $("recNote").textContent = "The microphone was not allowed. Let this page use it in "
+      + "the browser's site settings, then press record again."; return;
+  }
+  const type = ["audio/webm;codecs=opus","audio/webm","audio/ogg;codecs=opus","audio/mp4"]
+    .find((t) => MediaRecorder.isTypeSupported(t)) || "";
+  REC.rec = new MediaRecorder(REC.stream, type ? { mimeType:type } : undefined);
+  REC.chunks = []; REC.blob = null;
+  REC.rec.ondataavailable = (e) => { if (e.data && e.data.size) REC.chunks.push(e.data); };
+  REC.rec.onstop = () => {
+    clearInterval(REC.timer);
+    REC.stream.getTracks().forEach((t) => t.stop());
+    REC.blob = new Blob(REC.chunks, { type:REC.rec.mimeType || type || "audio/webm" });
+    $("btnRec").classList.remove("on");
+    $("recPreview").src = URL.createObjectURL(REC.blob); $("recPreview").hidden = false;
+    $("btnRecUse").hidden = false; $("btnRecAgain").hidden = false;
+    $("recNote").textContent = "Listen back, then use it or record again.";
+  };
+  REC.rec.start(250); REC.t0 = Date.now();
+  $("btnRec").classList.add("on");
+  $("recPreview").hidden = true; $("btnRecUse").hidden = true; $("btnRecAgain").hidden = true;
+  $("recNote").textContent = ADD.recFor === "melody"
+    ? "Recording — sing or hum the tune. Press again to stop."
+    : "Recording — press again to stop.";
+  REC.timer = setInterval(() => {
+    const secs = (Date.now() - REC.t0) / 1000;
+    $("recTime").textContent = fmtTime(secs);
+    if (secs >= 300 && REC.rec.state === "recording") REC.rec.stop();
+  }, 250);
+}
+async function recUse() {
+  if (!REC.blob || !REC.blob.size) { toast("Nothing was recorded.", true); return; }
+  const ext = /mp4/.test(REC.blob.type) ? ".m4a" : /ogg/.test(REC.blob.type) ? ".ogg" : ".webm";
+  const b = busy($("btnRecUse"), "Saving…");
+  try {
+    const r = await sendReference(REC.blob, "recording", "recording" + ext);
+    if (ADD.recFor === "melody") {
+      ADD.recFor = "reference";
+      $("cardAbc").open = true;
+      toast("Reading your melody…");
+      await startPlan("transcribe", { reference_audio:r.name, cover_mode:"melody", autoUse:true });
+    } else {
+      attachReference(r.name, r.reference.name);
+      toast("Recording attached — the next song takes its melody from it.");
+    }
+    $("btnRecUse").hidden = true;
+  } catch (e) { toast(e.message, true); }
+  finally { b.done(); }
+}
+
+/* browse: what you recorded or uploaded, and your own songs */
+async function loadRefs() {
+  try { ADD.refs = await api("/api/references"); } catch (e) { ADD.refs = []; }
+  renderRefs();
+}
+function previewToggle(src, btn) {
+  const playing = !PREVIEW.paused && PREVIEW.src.endsWith(src);
+  document.querySelectorAll("#refList [data-play]").forEach((b) => b.textContent = "▶");
+  if (playing) { PREVIEW.pause(); return; }
+  PREVIEW.src = src; PREVIEW.play().catch(() => {}); btn.textContent = "❚❚";
+  PREVIEW.onended = () => { btn.textContent = "▶"; };
+}
+function refRow(title, meta, src, actions) {
+  const row = document.createElement("div"); row.className = "refrow";
+  row.innerHTML = '<button class="iconbtn" data-play title="Listen">▶</button>'
+    + '<div class="n"><b></b><span></span></div>';
+  row.querySelector("b").textContent = title;
+  row.querySelector(".n span").textContent = meta;
+  row.querySelector("[data-play]").addEventListener("click", (e) => previewToggle(src, e.currentTarget));
+  actions.forEach(([label, fn, cls]) => {
+    const b = document.createElement("button"); b.className = "btn thin" + (cls ? " " + cls : "");
+    b.textContent = label; b.addEventListener("click", fn); row.appendChild(b);
+  });
+  return row;
+}
+function renderRefs() {
+  const box = $("refList"); box.innerHTML = "";
+  const f = $("refSearch").value.trim().toLowerCase();
+  const refs = ADD.refs.filter((r) => !f || r.name.toLowerCase().indexOf(f) >= 0);
+  const songs = S.tracks.filter((t) => !f || (t.title + " " + t.style).toLowerCase().indexOf(f) >= 0);
+  const when = (ts) => new Date(ts * 1000).toLocaleDateString();
+  const head = (text) => { const h = document.createElement("div"); h.className = "listhead"; h.textContent = text; box.appendChild(h); };
+  head("Recordings and uploads");
+  if (!refs.length) box.insertAdjacentHTML("beforeend", '<div class="note" style="margin:4px 6px">'
+    + (ADD.refs.length ? "Nothing matches." : "Nothing yet — upload or record something.") + "</div>");
+  refs.forEach((r) => box.appendChild(refRow(r.name,
+    (r.kind === "recording" ? "Recording" : "Upload") + (r.seconds ? " · " + fmtTime(r.seconds) : "") + " · " + when(r.created),
+    "/api/references/" + r.id + "/audio", [
+      ["Use", async () => {
+        try { const u = await api("/api/references/" + r.id + "/use", { method:"POST" });
+          attachReference(u.name, r.name); toast("Using “" + r.name + "”."); }
+        catch (e) { toast(e.message, true); } }],
+      ["Delete", async () => {
+        if (!confirm("Delete “" + r.name + "”?")) return;
+        await api("/api/references/" + r.id, { method:"DELETE" }); loadRefs(); }]])));
+  head("Your songs");
+  if (!songs.length) box.insertAdjacentHTML("beforeend", '<div class="note" style="margin:4px 6px">No songs yet.</div>');
+  songs.slice(0, 40).forEach((t) => box.appendChild(refRow(t.title,
+    (t.style || "").slice(0, 80), "/api/track/" + t.id, [
+      ["Use", () => useSongAsReference(t)]])));
+}
+async function useSongAsReference(t) {
+  try {
+    const r = await api("/api/track/" + t.id + "/as-reference", { method:"POST" });
+    attachReference(r.name, t.title);
+    toast("“" + t.title + "” is the reference — the next song takes its melody.");
+  } catch (e) { toast(e.message, true); }
+}
+
+/* voice */
+function setVocal(v) {
+  segSet("segVocal", v);
+  $("lyrics").disabled = v === "instrumental";
+  $("lyrics").style.opacity = v === "instrumental" ? ".45" : "1";
+  renderAttach(); saveDraft();
+}
+
+/* inspo */
+const KEY_NAMES = (k) => !k ? "" : /m$/.test(k) ? k.slice(0, -1) + " minor" : k + " major";
+function renderInspo() {
+  const rec = $("inspoFromRec"); rec.innerHTML = "";
+  const tr = PLAN.list.find((p) => p.kind === "transcribe" && p.facts && p.facts.ok);
+  if (tr) {
+    const f = tr.facts;
+    rec.appendChild(Object.assign(document.createElement("div"), { className:"listhead",
+      textContent:"From the recording you transcribed" }));
+    rec.appendChild(refRow(f.bpm + " BPM · " + KEY_NAMES(f.key) + " · " + f.meter,
+      f.measures + " bars · " + (f.chords ? f.chords + " chords" : "melody only"),
+      "", [
+        ["Tempo & key", () => {
+          const add = f.bpm + " BPM, " + KEY_NAMES(f.key);
+          $("style").value = ($("style").value.trim() ? $("style").value.trim() + ", " : "") + add;
+          syncChips(); saveDraft(); toast("Added “" + add + "” to the style."); }],
+        ["Its melody", () => usePlan(PLAN.list.indexOf(tr))]]));
+    rec.querySelector("[data-play]").remove();
+  }
+  const box = $("inspoList"); box.innerHTML = "";
+  const f = $("inspoSearch").value.trim().toLowerCase();
+  const songs = S.tracks.filter((t) => !f ||
+    (t.title + " " + t.style + " " + (t.lyrics || "")).toLowerCase().indexOf(f) >= 0);
+  box.appendChild(Object.assign(document.createElement("div"), { className:"listhead",
+    textContent:"From your songs" }));
+  if (!songs.length) {
+    box.insertAdjacentHTML("beforeend", '<div class="note" style="margin:4px 6px">'
+      + (S.tracks.length ? "Nothing matches." : "Make a song first — or press Surprise me.") + "</div>");
+    return;
+  }
+  songs.slice(0, 30).forEach((t) => {
+    const actions = [
+      ["Style", () => { $("style").value = t.style || ""; syncChips(); saveDraft();
+        toast("Style from “" + t.title + "”."); }],
+    ];
+    if (t.abc) actions.push(["Melody", () => loadScore(t)]);
+    actions.push(["Words", () => inspireWords(t)]);
+    actions.push(["Cover it", () => useSongAsReference(t)]);
+    box.appendChild(refRow(t.title, (t.style || "").slice(0, 90), "/api/track/" + t.id, actions));
+  });
+}
+function inspireWords(t) {
+  const lines = (t.lyrics || "").split("\n").map((l) => l.trim())
+    .filter((l) => l && !/^\[.*\]$/.test(l)).slice(0, 2);
+  $("lyrBrief").value = "In the spirit of “" + t.title + "”"
+    + (lines.length ? ": " + lines.join(" / ") : "") + " — new words, a new story.";
+  store("yue.lyrBrief", $("lyrBrief").value);
+  segSet("segLyrWant", "lyrics");
+  toggleLyricist(true);
+  toast("The idea is in the lyric writer. Press Write.");
+}
+function clearAll() {
+  if (!confirm("Start over? This clears the lyrics, style, title, score and audio.")) return;
+  const old = $("lyrics").value;
+  if (old && S.hist[S.hist.length - 1] !== old) { S.hist.push(old); S.histAt = S.hist.length - 1; }
+  ["lyrics","style","songTitle","abc"].forEach((id) => { $(id).value = ""; });
+  S.abcOrigin = ""; S.reference = null; S.refName = null; $("refNote").hidden = true;
+  syncChips(); lyricsNote(); abcNote(); renderAttach(); saveDraft();
+  toast("Cleared. Undo on the Lyrics card brings the lyrics back.");
 }
 
 /* ========================= boot ========================= */

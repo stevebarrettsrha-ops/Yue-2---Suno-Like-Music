@@ -189,6 +189,36 @@ and the key is dropped rather than sent somewhere new. A key goes only over
 `OPENROUTER_API_KEY` are used when set and no key is saved. Nothing is sent to
 the writer until you press **Write**, and making songs never needs it.
 
+Two things keep the writer from slowing your songs down. On **Auto** length
+it writes a typical three-minute song. The engine's six-minute Auto figure is
+only an upper limit it allocates for, and a song written to fill it takes
+about twice as long to render. A length you pick yourself is treated as a
+limit, not a target. A local writer also shares your graphics card with
+YuE2, so after each write Ollama is told to unload its model. In LM Studio,
+unload a model you loaded by hand before making songs, especially on a card
+with 8–12 GB.
+
+**Audio, Voice and Inspo.** The bar above the Lyrics card has three doors.
+
+- **Audio**: *Upload* (or drop a file), *Record* from your microphone, or
+  *Browse* your earlier recordings, uploads and songs. Each upload and
+  recording is kept in `data/references/` so you can use it again, and a
+  recording is turned into wav when ffmpeg is present. The next song takes its
+  **melody** from the audio (and its chords, with *Melody + chords*), read by
+  SheetSage2. It does not take the sound, the singer or the mix.
+- **Voice**: choose who sings (any, male, female, none) and describe the voice
+  in words; the description joins the style. **Sing or hum your melody**
+  records your tune and turns it into the song's score, without making the
+  song a cover. YuE2 cannot copy the sound of a recorded voice (the YuE2
+  authors say so too), so the voice itself is always described in words.
+- **Inspo**: start from a song you already made. Borrow its *Style*, its
+  *Melody* (its score), its *Words* (the idea goes to the lyric writer for new
+  lyrics), or *Cover it*. Once a recording has been transcribed, Inspo also
+  offers its tempo and key. *Surprise me* writes a random style.
+
+The ✨ at the foot of the Lyrics box opens the lyric writer, and the bin next
+to Create clears the song so you can start over (Undo brings the lyrics back).
+
 **Plan first, render later.** Under **Score**, *Plan first* asks YuE2 for
 one, three or five melody plans and makes no audio. Each plan comes back as
 its score, with its seed, tempo, key, bars, length, chords and sections, so
