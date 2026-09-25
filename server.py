@@ -1820,7 +1820,7 @@ def api_lyrics_write():
     if manager.TASKS.running("lyrics"):
         return jsonify({"error": "Already writing. Stop that one first."}), 409
     task = manager.spawn("lyrics", "Writing lyrics",
-                         lambda t: lyricist.run(t, conn, ask),
+                         lambda t: lyricist.released(lyricist.run)(t, conn, ask),
                          meta={"want": ask["want"]})
     return jsonify({"ok": True, "task": task.view()})
 
@@ -1841,7 +1841,7 @@ def api_abc_reharmonize():
     if manager.TASKS.running("lyrics"):
         return jsonify({"error": "The writer is busy. Stop that first."}), 409
     task = manager.spawn("lyrics", "Reharmonizing the score",
-                         lambda t: lyricist.run_reharm(t, conn, ask),
+                         lambda t: lyricist.released(lyricist.run_reharm)(t, conn, ask),
                          meta={"want": "reharm"})
     return jsonify({"ok": True, "task": task.view()})
 

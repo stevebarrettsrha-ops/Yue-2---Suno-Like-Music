@@ -948,7 +948,10 @@
     <h2>Lyric writer <span class="note">optional</span></h2>
     <p class="note" style="margin:0 0 12px">A chat model that writes lyrics, a style
       and a title from a line about the song. Ollama and LM Studio run on this
-      computer and need no key; cloud services do.</p>
+      computer and need no key; cloud services do. A local writer shares the
+      graphics card with YuE2: Ollama is told to unload after each write, but a
+      model you load by hand in LM Studio stays in memory and slows songs down
+      until you unload it.</p>
     <div class="grid2">
       <div><label class="note" for="llmProvider">Service</label>
         <select id="llmProvider" class="search"></select></div>
@@ -2428,7 +2431,8 @@ async function writeLyrics() {
   const body = { want:want, brief:$("lyrBrief").value.trim(),
     style:$("style").value.trim(), lyrics:$("lyrics").value,
     title:$("songTitle").value.trim(), language:$("lyrLang").value.trim(),
-    vocal:o.vocal, duration:o.duration, abc:$("abc").value.trim() };
+    vocal:o.vocal, duration:o.duration, auto:o.durationChoice === "auto",
+    abc:$("abc").value.trim() };
   if (want === "fit" && !body.abc) {
     toast("Fitting lyrics needs a melody in the Score box — plan one or load a song's score.", true);
     $("cardAbc").open = true; return; }

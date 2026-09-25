@@ -75,6 +75,11 @@ CONNECT_TIMEOUT = 10
 READ_TIMEOUT = 300
 
 WANTS = ("song", "lyrics", "polish", "fit")
+# What Auto length means to the writer: a typical song.
+TYPICAL_SECONDS = 180
+# How long LM Studio may keep a model it loaded on demand once a write is
+# done. Only models it loaded itself (JIT) honour it; one loaded by hand stays.
+LMSTUDIO_TTL = 60
 
 
 class LyricistError(RuntimeError):
@@ -268,7 +273,9 @@ words) are just the tag on its own line.
 - Lines should be singable: natural stresses, a consistent perspective, \
 concrete images, and a hook the chorus returns to. Match the density of words \
 to the tempo.
-- Fill the requested length: roughly one section per 20 to 30 seconds.
+- Match the requested length and never exceed it: roughly one section per 20 \
+to 30 seconds of it. Every extra section makes the song longer, and a longer \
+song takes longer to render.
 - If the language is normally written in a script other than Latin, Chinese, \
 Japanese or Korean, write the words as they sound in Latin letters, with \
 hyphens between syllables where that helps. YuE2 was not taught other scripts.
@@ -290,6 +297,10 @@ def clean_request(body: dict) -> dict:
 
     want = body.get("want")
     vocal = body.get("vocal")
+    # Auto is the engine's allocation ceiling (six minutes on current YuE2),
+    # not a length anyone asked for. Written to, it doubled render times for
+    # the same song, so Auto means a typical song here.
+    auto = body.get("auto") is True
     try:
         duration = int(float(body.get("duration") or 180))
     except (TypeError, ValueError, OverflowError):
@@ -303,7 +314,8 @@ def clean_request(body: dict) -> dict:
         "language": text("language", 60) or "English",
         "vocal": vocal if vocal in ("male", "female", "instrumental") else "",
         "abc": text("abc", scores.MAX_ABC),
-        "duration": max(10, min(duration, 900)),
+        "duration": TYPICAL_SECONDS if auto else max(10, min(duration, 900)),
+        "auto": auto,
     }
 
 
@@ -339,7 +351,12 @@ def user_prompt(req: dict) -> str:
             lines += [f"Voice: {req['vocal']} vocal"]
     minutes, seconds = divmod(req["duration"], 60)
     length = (f"{minutes} min {seconds:02d} s" if minutes else f"{seconds} s")
-    lines += [f"Length: about {length} ({req['duration']} seconds)."]
+    if req.get("auto"):
+        lines += [f"Length: a typical song, about {length} ({req['duration']} "
+                  "seconds). Do not write more than that needs."]
+    else:
+        lines += [f"Length: up to {length} ({req['duration']} seconds) — a "
+                  "limit, not a quota."]
     if req["want"] == "fit":
         lines += ["", *fit_brief(req["abc"])]
         if req["lyrics"]:
@@ -676,6 +693,8 @@ def _stream_openai(conn: dict, system: str, prompt: str, task, on_text) -> None:
     body = {"model": conn["model"], "stream": True,
             "messages": [{"role": "system", "content": system},
                          {"role": "user", "content": prompt}]}
+    if conn.get("provider") == "lmstudio":
+        body["ttl"] = LMSTUDIO_TTL
     try:
         resp = requests.post(conn["base"] + "/chat/completions", json=body,
                              headers=_openai_headers(conn), stream=True,
@@ -807,6 +826,39 @@ def list_models(cfg: dict) -> list[str]:
     except (ValueError, TypeError, KeyError):
         raise LyricistError(f"{prov['label']} sent a model list YuE Studio "
                             "could not read.") from None
+
+
+# --------------------------------------------------------------------------- #
+# giving the GPU back
+#
+# A local writer shares the graphics card with YuE2. Ollama keeps a model in
+# memory for five minutes after it answers; a 7-8B model is several GB, and
+# ComfyUI, finding the card full, swaps YuE2 in and out for every song — the
+# same song, much slower. So once a write is over, Ollama is told to let go.
+# --------------------------------------------------------------------------- #
+def release(conn: dict, task=None) -> None:
+    if conn.get("provider") != "ollama":
+        return
+    root = re.sub(r"/v1/?$", "", conn["base"])
+    try:
+        requests.post(root + "/api/generate",
+                      json={"model": conn["model"], "keep_alive": 0},
+                      timeout=CONNECT_TIMEOUT)
+        if task is not None:
+            task.log("Asked Ollama to unload the model, so songs get the "
+                     "whole GPU.")
+    except requests.RequestException:
+        pass
+
+
+def released(fn):
+    """A task body that hands the GPU back however it ends."""
+    def body(task, conn: dict, req: dict) -> None:
+        try:
+            fn(task, conn, req)
+        finally:
+            release(conn, task)
+    return body
 
 
 # --------------------------------------------------------------------------- #

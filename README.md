@@ -189,6 +189,15 @@ and the key is dropped rather than sent somewhere new. A key goes only over
 `OPENROUTER_API_KEY` are used when set and no key is saved. Nothing is sent to
 the writer until you press **Write**, and making songs never needs it.
 
+Two things keep the writer from slowing your songs down. On **Auto** length
+it writes a typical three-minute song. The engine's six-minute Auto figure is
+only an upper limit it allocates for, and a song written to fill it takes
+about twice as long to render. A length you pick yourself is treated as a
+limit, not a target. A local writer also shares your graphics card with
+YuE2, so after each write Ollama is told to unload its model. In LM Studio,
+unload a model you loaded by hand before making songs, especially on a card
+with 8–12 GB.
+
 **Audio, Voice and Inspo.** The bar above the Lyrics card has three doors.
 
 - **Audio**: *Upload* (or drop a file), *Record* from your microphone, or
