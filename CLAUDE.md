@@ -189,10 +189,28 @@
     renders, which is what a big model on a small card looks like: slow, but
     always moving.
 
+28. **The lyric writer is optional, and its key goes nowhere it was not
+    given for.** `lyricist.py` is never on the path to a song: no writer set
+    up means the Write button points at Settings and nothing else changes.
+    The key follows rule 7 — masked to its last four, never in any response
+    (`POST /api/config` once returned the whole config, HF token included; it
+    returns the public keys only) — and is saved with `llm_key_base`, the
+    address it was typed for. An address that changes without a new key
+    drops it, and a key goes only over https or to loopback: a wrong address
+    must not become a way to hand someone a paid key. An environment key
+    (`ANTHROPIC_API_KEY` …) is read only for its provider's own default
+    address. A write is a Task (rule 9) that streams and checks
+    `task.cancel` between chunks; one runs at a time, because a second press
+    pays for a second answer. Reasoning a local model thinks out loud
+    (`<think>…</think>`) is stripped before anything reaches the page.
+    Claude goes through the official `anthropic` SDK with the server-side
+    refusal fallback on for the models that take it; every other service is
+    plain OpenAI-compatible chat completions.
+
 ## Validation gate — run after any edit
 
 ```bash
-python -m py_compile server.py comfy.py bootstrap.py manager.py
+python -m py_compile server.py comfy.py bootstrap.py manager.py lyricist.py
 python - <<'PY'                       # extract inline JS, then: node --check
 import re, pathlib
 src = pathlib.Path('web/index.html').read_text()
@@ -205,14 +223,14 @@ node --check /tmp/app.js
 A missing function declaration in the inline script kills all interactivity
 silently — `node --check` is not optional.
 
-`python tests/run.py` runs that gate and everything else (535 checks, about
-three minutes); `python tests/run.py gate` is just the block above. Run the
+`python tests/run.py` runs that gate and everything else (614 checks, about
+four minutes); `python tests/run.py gate` is just the block above. Run the
 whole suite before pushing. Tests take their own port and their own
 `YUE_STUDIO_DATA` directory, so they never touch a real library. Four of them
 need `ffmpeg` on PATH and fail without it — that is the machine, not the code.
-The last 75 are the browser group and need Playwright (`pip install -r
+The last 88 are the browser group and need Playwright (`pip install -r
 requirements-dev.txt && python -m playwright install chromium`); without it
-that group steps aside and the run stops at 446, which is a short count and
+that group steps aside and the run stops at 526, which is a short count and
 not a pass to compare against.
 
 `python tests/run.py engine` is the group that owns real ComfyUI processes:

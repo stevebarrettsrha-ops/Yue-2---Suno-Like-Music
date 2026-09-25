@@ -132,6 +132,13 @@ class Server:
         return "\n".join(self.log.read_text().splitlines()[-lines:])
 
 
+def llm() -> Server:
+    """A stand-in chat server for the lyric writer (tests/mock_llm.py)."""
+    port = free_port()
+    return Server([sys.executable, str(MOCK.with_name("mock_llm.py")), str(port)],
+                  port, "/_last")
+
+
 def comfy(delay: float = 2.0, **env) -> Server:
     """A stand-in ComfyUI. delay is how long a song takes to 'render'."""
     port = free_port()

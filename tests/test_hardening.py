@@ -135,10 +135,27 @@ def run(slow: bool = False) -> Suite:
                  "/api/deps/nonexistent/install"),
                 ("HF settings", requests.post, "/api/hf/settings"),
                 ("HF download", requests.post, "/api/hf/download"),
-                ("HF delete", requests.delete, "/api/hf/local")):
+                ("HF delete", requests.delete, "/api/hf/local"),
+                ("lyric writer settings", requests.post, "/api/llm/settings"),
+                ("lyric write", requests.post, "/api/lyrics/write")):
             for value in ([], "text", 7, True):
                 _sane(s, f"{label} survives JSON {type(value).__name__}",
                       method(f"{api}{path}", json=value, timeout=20))
+
+        # The lyric writer's fields, each of the wrong type, change nothing.
+        before = requests.get(f"{api}/api/llm/settings", timeout=10).json()
+        r = requests.post(f"{api}/api/llm/settings", json={
+            "provider": [], "base": 5, "model": {"a": 1}, "key": 7,
+            "clear_key": "yes"}, timeout=10)
+        after = requests.get(f"{api}/api/llm/settings", timeout=10).json()
+        _sane(s, "lyric writer settings of the wrong types are harmless", r)
+        s.check("and leave the writer as it was",
+                {k: before[k] for k in ("provider", "base", "model")}
+                == {k: after[k] for k in ("provider", "base", "model")})
+        _sane(s, "a write with fields of the wrong types is harmless",
+              requests.post(f"{api}/api/lyrics/write", json={
+                  "brief": [], "duration": "x", "want": 3, "vocal": None},
+                  timeout=10))
 
         # Strings that look boolean are a common hand-written API mistake.
         # They must not silently invert generation or persistent settings.

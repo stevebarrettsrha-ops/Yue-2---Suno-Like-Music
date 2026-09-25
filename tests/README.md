@@ -24,10 +24,11 @@ python -m playwright install chromium
 | `library` | The song list under concurrent writes, damaged `library.json`, track filenames, how long a song really is, and which finished jobs stay visible. |
 | `setup` | Addresses people type, finding the interpreter an existing ComfyUI runs on, deleting a model file, resumable downloads, and every answer HuggingFace can give. |
 | `api` | The HTTP surface end to end: a song of every kind, playing and seeking, renaming and deleting, stopping the right song, and ComfyUI going away mid-render. |
+| `lyrics` | The lyric writer: reading whatever a model answers (labels, markdown, fences, JSON, `<think>` reasoning), the key bound to its address and never sent back, one write at a time, Stop, and a real round trip over both the OpenAI-compatible and Anthropic streams. |
 | `engine` | The engine process itself: the console endpoint, all four restart routes, taking a port back from an orphan, refusing to kill what is not ComfyUI, naming a supervisor that puts it straight back, the stale model scan, and what a launch does to an engine that is already up. |
 | `hardening` | Fields of the wrong type, paths that try to climb out, requests addressed elsewhere, and config or library files damaged behind the app's back. |
 | `load` | 300 requests at once, 48 songs queued together with deletes landing on top, then what the process looks like afterwards. |
-| `ui` | The interface in a real browser — making, playing, sorting, stopping and setting up. Any uncaught script error fails the run. |
+| `ui` | The interface in a real browser — making, playing, sorting, stopping, setting up, and writing lyrics with a writer chosen in Settings. Any uncaught script error fails the run. |
 
 ## How it stays out of your way
 
@@ -35,6 +36,10 @@ Every test gets a free port and its own data directory through
 `YUE_STUDIO_DATA`, so a run never touches a real library or config, and two
 runs cannot collide. Servers are started and stopped by `harness.py`, whatever
 happens in the test.
+
+`mock_llm.py` stands in for a chat model. The model name picks what it does
+— a normal song, a plain JSON body, a slow stream for Stop, a refused key,
+a Claude refusal — and `/_last` shows what was actually sent to it.
 
 `mock_comfy.py` stands in for ComfyUI. Its `/object_info` is not written by
 hand: `object_info.json` is a capture from a real server, trimmed to the nodes
