@@ -24,6 +24,7 @@ from flask import Flask, jsonify, request, send_file, send_from_directory
 import bootstrap
 import lyricist
 import manager
+import scores
 from bootstrap import (ComfyProcess, Progress, clean_url,
                        comfy_online, comfy_port, detect_comfy_dirs,
                        load_config, save_config)
@@ -708,6 +709,17 @@ def run_job(job_id: str, params: dict, built: dict | None = None) -> None:
             "duration": params.get("duration"),
             "seconds": audio_duration(kept),
             "mode": params.get("mode"),
+            # Where the score came from: the planner, a transcription, a score
+            # in the box (a chosen plan, an edit), or none at all.
+            "abc_source": ("score" if built["abc_text"]
+                           else "transcribed" if params.get("reference_audio")
+                           else "planned" if built["abc"] else "none"),
+            "cover_mode": (params.get("cover_mode")
+                           if params.get("reference_audio") else None),
+            "top_p": params.get("top_p"),
+            "top_k": params.get("top_k"),
+            "repetition_penalty": params.get("repetition_penalty"),
+            "scheduler": params.get("scheduler"),
             "steps": params.get("steps"),
             "cfg": params.get("cfg"),
             "sampler": params.get("sampler"),
@@ -795,6 +807,9 @@ def api_status():
             # node has been seen to fall over. The page falls back to 180s
             # when this is absent, so it must actually be sent.
             payload["recommended_duration"] = client.duration_default()
+            # Planning first reads the score back through PreviewAny; an
+            # engine without it can still make songs, in one pass.
+            payload["can_plan"] = client.can_plan()
         except Exception as exc:  # ComfyUI up but too old / still loading
             payload["schema_error"] = str(exc)
         # The two silent "nothing works" states, named rather than left for
@@ -1419,6 +1434,163 @@ def api_task_cancel(task_id: str):
 
 
 # --------------------------------------------------------------------------- #
+# routes - scores
+#
+# YuE2's own ABC helper, answering the Score panel. Checks advise; they never
+# stop a score reaching the engine (see scores.py).
+# --------------------------------------------------------------------------- #
+@app.post("/api/abc/inspect")
+def api_abc_inspect():
+    body = json_object()
+    text = as_text(body.get("abc"))
+    facts = scores.inspect(text)
+    lyrics = as_text(body.get("lyrics"))
+    if facts.get("ok") and lyrics.strip():
+        facts["lyric_fit"] = scores.lyric_fit(lyrics, text)
+    return jsonify(facts)
+
+
+@app.post("/api/abc/strip-chords")
+def api_abc_strip():
+    body = json_object()
+    try:
+        out = scores.strip_chords(as_text(body.get("abc")),
+                                  as_text(body.get("keep"), "both") or "both")
+    except scores.ScoreError as exc:
+        return jsonify({"error": str(exc)}), 400
+    return jsonify({"ok": True, "abc": out, "facts": scores.inspect(out)})
+
+
+@app.post("/api/abc/compare")
+def api_abc_compare():
+    body = json_object()
+    try:
+        return jsonify(scores.compare(
+            as_text(body.get("before")), as_text(body.get("after")),
+            as_text(body.get("voices"), "Vocal") or "Vocal",
+            as_bool(body.get("allow_tempo_change"))))
+    except scores.ScoreError as exc:
+        return jsonify({"error": str(exc)}), 400
+
+
+# --------------------------------------------------------------------------- #
+# routes - plan first, render later
+#
+# The first pass on its own: YuE2GenerateABC (or SheetSage2 for a recording)
+# into PreviewAny, and nothing after it — no music tokens, no diffusion, no
+# audio. Several plans cost a fraction of one song; they are compared as
+# text, and only the one that is kept is rendered, through the Score box, by
+# the ordinary /api/generate. A song that was almost right is then one more
+# acoustic pass from its plan, not another roll of the dice.
+# --------------------------------------------------------------------------- #
+PLAN_LOST_LIMIT = 60.0
+
+
+class PlanStopped(Exception):
+    pass
+
+
+def wait_for_plan(task, prompt_id: str) -> dict:
+    """Wait for one plan prompt. Never timed for being slow (rule 27): it is
+    given up on only when ComfyUI no longer has it anywhere."""
+    lost_since = 0.0
+    while True:
+        if task.cancel:
+            client.stop(prompt_id)
+            raise PlanStopped()
+        try:
+            hist = client.history(prompt_id)
+        except requests.RequestException:
+            hist = {}
+        if hist:
+            return hist            # ComfyUI writes history once, when done
+        if client.in_queue(prompt_id):
+            lost_since = 0.0
+        else:
+            lost_since = lost_since or time.time()
+            if time.time() - lost_since > PLAN_LOST_LIMIT:
+                raise ComfyError("ComfyUI no longer has this plan in its queue "
+                                 "— it may have restarted. Plan again.")
+        time.sleep(0.5)
+
+
+def run_plans(task, built: list[dict], ask: dict) -> None:
+    plans: list[dict] = []
+    kind = built[0]["kind"]
+
+    def publish(**extra) -> None:
+        # Replaced, never edited in place: /api/tasks reads it concurrently.
+        task.set(meta={"kind": kind, "request": ask, "plans": list(plans),
+                       **extra})
+
+    publish()
+    for n, one in enumerate(built, 1):
+        label = "Transcribing" if kind == "transcribe" else f"Plan {n} of {len(built)}"
+        task.set(detail=label + "…", pct=100 * (n - 1) / len(built))
+        prompt_id = client.queue(one["prompt"])
+        try:
+            hist = wait_for_plan(task, prompt_id)
+        except PlanStopped:
+            task.log("Stopped.")
+            task.set(state="cancelled", detail="Stopped")
+            publish()
+            return
+        err = client.failed(prompt_id, hist)
+        if err:
+            raise ComfyError(explain_failure(err, one["ckpt"]))
+        text = client.preview_text(prompt_id, one["preview"])
+        if not text.strip():
+            raise ComfyError("ComfyUI finished but handed no score back.")
+        plans.append({"n": n, "seed": one["seed"], "mode": one["mode"],
+                      "kind": kind, "ckpt": one["ckpt"], "abc": text,
+                      "facts": scores.inspect(text), "made": time.time()})
+        task.log(f"{label}: done (seed {one['seed']}).")
+        publish()
+    task.set(detail="Done", pct=100)
+
+
+@app.post("/api/plan")
+def api_plan():
+    body = json_object()
+    params = clean_generate(body)
+    kind = as_text(body.get("kind"), "plan")
+    kind = kind if kind in ("plan", "transcribe") else "plan"
+    if kind == "plan" and not params["style"].strip():
+        return jsonify({"error": "Add a style description before planning."}), 400
+    if kind == "transcribe" and not params["reference_audio"]:
+        return jsonify({"error": "Attach a recording to transcribe first."}), 400
+    if not comfy_online(cfg["comfy_url"]):
+        return jsonify({"error": "ComfyUI is not running. Start it from "
+                                 "Settings."}), 503
+    if manager.TASKS.running("plan"):
+        return jsonify({"error": "Already planning. Stop that first."}), 409
+    # A recording has one transcription; several plans are what make
+    # comparing worth doing.
+    count = 1 if kind == "transcribe" else as_int(body.get("count"), 3, 1, 5)
+    seed = params["seed"]
+    try:
+        built = [client.build_plan_prompt({
+            **params, "kind": kind,
+            # Consecutive seeds when one is given, so a set of plans can be
+            # made again exactly; fresh ones otherwise.
+            "seed": None if seed is None else seed + i})
+            for i in range(count)]
+    except ComfyError as exc:
+        return jsonify({"error": str(exc)}), 409
+    except requests.RequestException:
+        return jsonify({"error": "ComfyUI stopped answering. Try again after "
+                                 "the Engine page says ready."}), 503
+    ask = {"style": params["style"], "lyrics": params["lyrics"],
+           "mode": built[0]["mode"], "instrumental": params["instrumental"],
+           "reference_audio": params["reference_audio"]}
+    title = "Transcribing the recording" if kind == "transcribe" else (
+        f"Planning {count} melod{'y' if count == 1 else 'ies'}")
+    task = manager.spawn("plan", title, lambda t: run_plans(t, built, ask),
+                         meta={"kind": kind, "request": ask, "plans": []})
+    return jsonify({"ok": True, "task": task.view()})
+
+
+# --------------------------------------------------------------------------- #
 # routes - lyric writer
 #
 # Optional. A chat model the person already has writes lyrics, a style line and
@@ -1459,6 +1631,11 @@ def api_lyrics_write():
         return jsonify({"error": str(exc)}), 409
     if ask["want"] == "polish" and not ask["lyrics"]:
         return jsonify({"error": "There are no lyrics to polish yet."}), 400
+    if ask["want"] == "fit":
+        try:
+            lyricist.fit_brief(ask["abc"])
+        except lyricist.LyricistError as exc:
+            return jsonify({"error": str(exc)}), 400
     # One at a time: a second press while the first is still streaming would
     # pay for two answers and keep only one of them.
     if manager.TASKS.running("lyrics"):
@@ -1466,6 +1643,27 @@ def api_lyrics_write():
     task = manager.spawn("lyrics", "Writing lyrics",
                          lambda t: lyricist.run(t, conn, ask),
                          meta={"want": ask["want"]})
+    return jsonify({"ok": True, "task": task.view()})
+
+
+@app.post("/api/abc/reharmonize")
+def api_abc_reharmonize():
+    """The lyric writer, as a score editor on a contract: new chords, the
+    melody kept note for note — and checked, not taken on trust."""
+    ask = lyricist.clean_reharm(json_object())
+    facts = scores.inspect(ask["abc"])
+    if not facts.get("ok"):
+        return jsonify({"error": "Reharmonizing needs a score in YuE2's "
+                                 "native form. " + facts.get("error", "")}), 400
+    try:
+        conn = lyricist.connection(cfg)
+    except lyricist.LyricistError as exc:
+        return jsonify({"error": str(exc)}), 409
+    if manager.TASKS.running("lyrics"):
+        return jsonify({"error": "The writer is busy. Stop that first."}), 409
+    task = manager.spawn("lyrics", "Reharmonizing the score",
+                         lambda t: lyricist.run_reharm(t, conn, ask),
+                         meta={"want": "reharm"})
     return jsonify({"ok": True, "task": task.view()})
 
 

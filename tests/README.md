@@ -25,10 +25,11 @@ python -m playwright install chromium
 | `setup` | Addresses people type, finding the interpreter an existing ComfyUI runs on, deleting a model file, resumable downloads, and every answer HuggingFace can give. |
 | `api` | The HTTP surface end to end: a song of every kind, playing and seeking, renaming and deleting, stopping the right song, and ComfyUI going away mid-render. |
 | `lyrics` | The lyric writer: reading whatever a model answers (labels, markdown, fences, JSON, `<think>` reasoning), the key bound to its address and never sent back, one write at a time, Stop, and a real round trip over both the OpenAI-compatible and Anthropic streams. |
+| `scores` | YuE2's native ABC: reading, sections and notes, stripping chords without moving a note, melody comparisons; plan first (seeded, no audio), a recording transcribed before it is rendered, and the writer's reharmonizations proved or refused. |
 | `engine` | The engine process itself: the console endpoint, all four restart routes, taking a port back from an orphan, refusing to kill what is not ComfyUI, naming a supervisor that puts it straight back, the stale model scan, and what a launch does to an engine that is already up. |
 | `hardening` | Fields of the wrong type, paths that try to climb out, requests addressed elsewhere, and config or library files damaged behind the app's back. |
 | `load` | 300 requests at once, 48 songs queued together with deletes landing on top, then what the process looks like afterwards. |
-| `ui` | The interface in a real browser — making, playing, sorting, stopping, setting up, and writing lyrics with a writer chosen in Settings. Any uncaught script error fails the run. |
+| `ui` | The interface in a real browser — making, playing, sorting, stopping, setting up, writing lyrics with a writer chosen in Settings, planning first, and comparing two songs. Any uncaught script error fails the run. |
 
 ## How it stays out of your way
 

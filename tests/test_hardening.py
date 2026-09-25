@@ -137,7 +137,12 @@ def run(slow: bool = False) -> Suite:
                 ("HF download", requests.post, "/api/hf/download"),
                 ("HF delete", requests.delete, "/api/hf/local"),
                 ("lyric writer settings", requests.post, "/api/llm/settings"),
-                ("lyric write", requests.post, "/api/lyrics/write")):
+                ("lyric write", requests.post, "/api/lyrics/write"),
+                ("score check", requests.post, "/api/abc/inspect"),
+                ("strip chords", requests.post, "/api/abc/strip-chords"),
+                ("score compare", requests.post, "/api/abc/compare"),
+                ("reharmonize", requests.post, "/api/abc/reharmonize"),
+                ("plan", requests.post, "/api/plan")):
             for value in ([], "text", 7, True):
                 _sane(s, f"{label} survives JSON {type(value).__name__}",
                       method(f"{api}{path}", json=value, timeout=20))
@@ -156,6 +161,17 @@ def run(slow: bool = False) -> Suite:
               requests.post(f"{api}/api/lyrics/write", json={
                   "brief": [], "duration": "x", "want": 3, "vocal": None},
                   timeout=10))
+
+        # Scores of the wrong type, or far too long, are refused politely.
+        for path, body in (("/api/abc/inspect", {"abc": ["X:1"], "lyrics": 5}),
+                           ("/api/abc/strip-chords", {"abc": "X:1\n" * 40000,
+                                                      "keep": []}),
+                           ("/api/abc/compare", {"before": 1, "after": None,
+                                                 "voices": {"a": 1}}),
+                           ("/api/plan", {"kind": ["transcribe"], "count": "lots",
+                                          "style": 7})):
+            _sane(s, f"{path} with fields of the wrong types is harmless",
+                  requests.post(f"{api}{path}", json=body, timeout=20))
 
         # Strings that look boolean are a common hand-written API mistake.
         # They must not silently invert generation or persistent settings.

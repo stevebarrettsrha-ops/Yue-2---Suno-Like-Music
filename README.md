@@ -189,6 +189,46 @@ and the key is dropped rather than sent somewhere new. A key goes only over
 `OPENROUTER_API_KEY` are used when set and no key is saved. Nothing is sent to
 the writer until you press **Write**, and making songs never needs it.
 
+**Plan first, render later.** Under **Score**, *Plan first* asks YuE2 for
+one, three or five melody plans and makes no audio. Each plan comes back as
+its score, with its seed, tempo, key, bars, length, chords and sections, so
+you can compare them as text. Press **Use** on the one you want and
+**Create** renders only that plan. If a song was almost right, choose
+**Render again from its plan** from its menu: the same score, seed and
+settings come back, and the fix costs one more render pass instead of a whole
+new song. Plans made with a fixed seed come out the same again.
+
+**Working on the score.** The Score box is checked against YuE2's own ABC
+reader as you type. It shows the tempo, key, bars and chords, flags a score
+with chords while *Melody plan* is set to Melody (melody mode does not remove
+chords), and gives a rough count of lyric syllables against sung notes for
+each section. The check only advises: whatever is in the box is sent as it
+is.
+
+- **Strip chords** removes the chord symbols and confirms that no note
+  moved. **Vocal line only** also silences the instrument line.
+- **Check melody kept** compares the box, note for note, with the score as it
+  was loaded (from a plan, a transcription or a song).
+- **Reharmonize…** asks the lyric writer for new chords under the melody.
+  You choose whether the sung melody or both melodies stay fixed. The answer
+  is checked note for note. One that moved the melody is sent back once with
+  the exact difference, and if it still fails it is refused and your score
+  stays untouched.
+- In the lyric writer, **Fit to score** writes lyrics to the melody in the
+  box. It tells the model, section by section, how many notes are sung.
+
+**Covers, the YuE2 way.** With a recording attached, *Transcribe the
+recording* puts SheetSage2's score in the box *before* anything is rendered.
+Check it, correct it, **Strip chords**, and Create renders it in Melody mode.
+This is the cover recipe from the YuE2 skill. Pressing Create without
+transcribing first still makes a cover in one pass, as before.
+
+**Comparing.** In a song's menu, choose *Compare with…*, then choose
+*Compare* on a second song. Both open side by side, playable, with seed,
+model, mode, score source, sampling, style and lyrics, and every difference
+marked. If both have scores, it also says whether the sung melody is the
+same.
+
 **More options**
 
 - *Melody plan* — `full` writes melody and chords before rendering audio
@@ -338,6 +378,8 @@ bootstrap.py   Python/ComfyUI discovery, installs, model downloads, process cont
 manager.py     Background tasks — dependency installs and HuggingFace downloads
 comfy.py       Builds the YuE2 graph from ComfyUI's /object_info schema, queues it
 lyricist.py    The optional lyric writer — chat-model client, prompt, answer parsing
+scores.py      Reads, checks and edits YuE2's native ABC (strip chords, compare)
+yue2_abc.py    YuE2's own ABC helper, unchanged (Apache-2.0, see THIRD_PARTY.md)
 web/index.html The interface — one file, no build step
 assets/        yue2_full_reference.json, the workflow the graph mirrors
 docs/          Design notes — what to take from the Music Production Toolkit

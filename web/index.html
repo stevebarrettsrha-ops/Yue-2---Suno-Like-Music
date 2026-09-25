@@ -109,6 +109,33 @@
   .lyricist .lrow .search{width:130px}
   #lyrDraft{height:auto;max-height:190px;margin-top:10px}
   .sheet h2{font-size:15px;margin:24px 0 4px}
+  /* score tools and plans */
+  .scoretools{border-top:1px solid var(--line-soft);padding:12px 15px 14px;background:#131317}
+  .scoretools .lrow{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+  .scoretools .lrow + .lrow{margin-top:8px}
+  .scoretools select{background:#232329;border:1px solid var(--line);border-radius:8px;
+    padding:6px 8px;font-size:12.5px}
+  .scoretools .search{flex:1;min-width:200px}
+  .plan{border:1px solid var(--line-soft);border-radius:11px;padding:9px 11px;margin-top:8px;
+    background:#16161b}
+  .plan .phead{display:flex;gap:10px;align-items:center;flex-wrap:wrap;font-size:12.5px}
+  .plan .phead span{color:var(--muted);flex:1;min-width:180px}
+  .plan pre{margin:8px 0 0;max-height:220px;overflow:auto;font-size:11.5px;color:#b9b9c4;
+    background:#0c0c0f;border-radius:8px;padding:8px;white-space:pre}
+  .plan.bad span{color:#ffb4b4}
+  /* listening comparison */
+  .cmpgrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:14px}
+  .cmpcol{border:1px solid var(--line-soft);border-radius:12px;padding:12px;background:#151519;
+    min-width:0}
+  .cmpcol h3{margin:0 0 8px;font-size:14px}
+  .cmpcol audio{width:100%;margin-bottom:8px}
+  .cmpcol dl{display:grid;grid-template-columns:auto 1fr;gap:3px 10px;margin:0;font-size:12px}
+  .cmpcol dt{color:var(--dim)} .cmpcol dd{margin:0;word-break:break-word}
+  .cmpcol dd.diff{color:#ffd693}
+  .cmpcol pre{white-space:pre-wrap;font-size:11.5px;color:#b9b9c4;max-height:160px;overflow:auto;
+    background:#0c0c0f;border-radius:8px;padding:8px;margin:8px 0 0}
+  .card > .note{margin:0;padding:0 16px 12px}
+  #abcNote .warn{color:#ffd693}
   .sheet select.search{appearance:auto}
   .bad-text{color:#ff9a9a}
 
@@ -466,6 +493,7 @@
                 <button class="on" data-v="song" title="Title, style and lyrics">Whole song</button>
                 <button data-v="lyrics" title="Lyrics for the style you have">Lyrics only</button>
                 <button data-v="polish" title="Tidy the lyrics already here">Polish mine</button>
+                <button data-v="fit" title="Write lyrics to the melody in the Score box, a syllable per note">Fit to score</button>
               </div>
               <input type="text" id="lyrLang" class="search" placeholder="Language" value="English"
                 title="The language to sing in" />
@@ -506,6 +534,40 @@
           <textarea id="abc" spellcheck="false"
             placeholder="Leave this empty and YuE2 writes the melody and chords itself.&#10;Make a song, press the score button on it, and the notation lands here to edit and re-render."></textarea>
           <p class="note" id="abcNote">Empty — YuE2 will write the score.</p>
+          <div class="scoretools" id="scoreTools">
+            <div class="lrow">
+              <button class="btn thin" id="btnPlan"
+                title="Write melody plans only — no audio. Compare them as text, keep one, and render just that one.">Plan first</button>
+              <select id="planCount" title="How many plans to write">
+                <option value="1">1 plan</option><option value="3" selected>3 plans</option>
+                <option value="5">5 plans</option></select>
+              <button class="btn thin" id="btnTranscribe" hidden
+                title="Read the attached recording's score, to check and correct before rendering">Transcribe the recording</button>
+              <button class="btn thin" id="btnPlanStop" hidden>Stop</button>
+            </div>
+            <div class="lrow">
+              <button class="btn thin" id="btnStripChords"
+                title="Remove the chord symbols. Melody mode does not drop them by itself — the YuE2 cover recipe strips them, then renders in Melody.">Strip chords</button>
+              <button class="btn thin" id="btnVocalOnly"
+                title="Keep the sung line and its timing; the instrument line becomes rests">Vocal line only</button>
+              <button class="btn thin" id="btnCompareAbc"
+                title="Check, note for note, that the melody is still the one this score started as">Check melody kept</button>
+              <button class="btn thin" id="btnReharm"
+                title="Have the lyric writer put new chords under the melody — checked afterwards to prove the melody did not move">Reharmonize…</button>
+            </div>
+            <div class="lrow" id="reharmRow" hidden>
+              <input type="text" id="reharmAsk" class="search"
+                placeholder="What harmony? e.g. modern jazz — ii–V turnarounds, borrowed minor chords in the bridge" />
+              <select id="reharmKeep" title="What must stay note for note">
+                <option value="Vocal">keep the sung melody</option>
+                <option value="both">keep both melodies</option></select>
+              <button class="btn go thin" id="btnReharmGo">Reharmonize</button>
+              <button class="btn thin" id="btnReharmStop" hidden>Stop</button>
+            </div>
+            <p class="note" id="planNote"></p>
+            <div class="log" id="reharmDraft" hidden></div>
+            <div id="planList"></div>
+          </div>
         </details>
 
         <details class="card" id="cardMore">
@@ -799,6 +861,19 @@
   </div>
 </div>
 
+<!-- ===================== listening comparison ===================== -->
+<div class="veil" id="compareVeil" hidden>
+  <div class="sheet" style="width:min(980px,100%)">
+    <h1>Compare</h1>
+    <p class="lede">Two songs side by side, with everything that made them. Differences
+      are marked. A score check says whether the written melody is the same — not
+      whether the audio performs it identically.</p>
+    <div class="cmpgrid"><div class="cmpcol" id="cmpA"></div><div class="cmpcol" id="cmpB"></div></div>
+    <p class="note" id="cmpNote"></p>
+    <div class="rowbtn"><button class="btn" id="btnCloseCmp">Close</button></div>
+  </div>
+</div>
+
 <div class="toast" id="toast" hidden></div>
 <audio id="audio"></audio>
 
@@ -930,7 +1005,8 @@ function readOpts() {
 }
 function saveDraft() {
   store("yue.draft", { lyrics:$("lyrics").value, style:$("style").value,
-    title:$("songTitle").value, abc:$("abc").value, opts:readOpts() });
+    title:$("songTitle").value, abc:$("abc").value, abcOrigin:S.abcOrigin || "",
+    opts:readOpts() });
 }
 function loadDraft() {
   S.likes = store("yue.likes") || {};
@@ -938,6 +1014,7 @@ function loadDraft() {
   $("lyrics").value = d.lyrics || ""; $("style").value = d.style || "";
   $("songTitle").value = d.title || "";
   $("abc").value = d.abc || ""; if (d.abc) $("cardAbc").open = true;
+  S.abcOrigin = d.abcOrigin || "";
   const o = d.opts || {};
   if (o.vocal !== undefined) segSet("segVocal", o.vocal);
 
@@ -1021,6 +1098,7 @@ function loadScore(t) {
     "plan off, or on an older version.", true); return; }
   show("create");
   $("abc").value = t.abc;
+  S.abcOrigin = t.abc;
   $("cardAbc").open = true;
   abcNote();
   $("abc").focus();
@@ -1048,23 +1126,69 @@ function lyricsNote() {
       + "Hyphens split a word into syllables.";
   }
 }
+/* The Score box is checked against YuE2's own reader as it changes. The
+   check advises and never blocks: a score it cannot read is still sent. */
+let abcTimer = null, abcSeq = 0;
 function abcNote() {
   const n = $("abc").value.trim();
-  $("abcNote").textContent = n
-    ? "Your score will be used as-is — " + n.split("\n").length + " lines. Clear it to let YuE2 write one."
-    : "Empty — YuE2 will write the score.";
+  clearTimeout(abcTimer);
+  if (!n) { S.abcFacts = null; $("abcNote").textContent = "Empty — YuE2 will write the score."; return; }
+  $("abcNote").textContent = "Your score will be used as-is. Checking it…";
+  abcTimer = setTimeout(checkAbc, 350);
+}
+function scoreSummary(f) {
+  const bits = [f.bpm + " BPM", f.key, f.meter, f.measures + " bars",
+    "~" + fmtTime(f.seconds), f.chords ? f.chords + " chords" : "no chords"];
+  const names = (f.sections || []).map((x) => x.name);
+  if (names.length) bits.push(names.join(", "));
+  return bits.join(" · ");
+}
+async function checkAbc() {
+  const text = $("abc").value.trim(); if (!text) return;
+  const seq = ++abcSeq;
+  let f;
+  try { f = await api("/api/abc/inspect", { method:"POST",
+    headers:{"Content-Type":"application/json"},
+    body:JSON.stringify({ abc:text, lyrics:$("lyrics").value }) }); }
+  catch (e) { return; }
+  if (seq !== abcSeq) return;
+  S.abcFacts = f;
+  const note = $("abcNote");
+  if (!f.ok) {
+    note.textContent = "Your score will be used as-is, but it is not in YuE2's "
+      + "native form, so it could not be checked — " + f.error;
+    return;
+  }
+  let h = "Your score will be used as-is — " + esc(scoreSummary(f)) + ".";
+  const plan = segGet("segPlan");
+  if (f.chords && plan === "melody")
+    h += ' <span class="warn">It has chords, and Melody mode does not remove them — '
+      + "Strip chords first, or set Melody plan to Full.</span>";
+  else if (!f.chords && plan === "full")
+    h += ' <span class="warn">It has no chords; Melody plan: Melody is the mode that matches it.</span>';
+  else if (plan === "none")
+    h += ' <span class="warn">Melody plan is Off, but a score in this box is still used.</span>';
+  const off = (f.lyric_fit || []).filter((x) => x.fit !== "ok");
+  if (off.length && segGet("segVocal") !== "instrumental")
+    h += ' <span class="warn">Lyrics against notes (a rough count): ' + off.map((x) =>
+      esc(x.section) + " " + x.fit + " — " + x.syllables + " syllables, " + x.notes
+      + " notes").join("; ") + ".</span>";
+  note.innerHTML = h;
 }
 function openMenu(btn, t) {
   document.querySelectorAll(".pop").forEach((p) => p.remove());
   const r = btn.getBoundingClientRect();
   const pop = document.createElement("div");
   pop.className = "pop";
-  pop.style.top = Math.min(r.bottom + 6, window.innerHeight - 230) + "px";
+  pop.style.top = Math.min(r.bottom + 6, window.innerHeight - 320) + "px";
   pop.style.left = Math.max(12, r.right - 190) + "px";
   const items = [
     ["Play", function () { play(t); }],
     ["Load these settings", function () { reuse(t); }],
     ["Edit the melody plan", function () { loadScore(t); }],
+    ["Render again from its plan", function () { rerender(t); }],
+    [S.compareWith ? "Compare with “" + S.compareWith.title + "”" : "Compare with…",
+     function () { compareWith(t); }],
     ["Rename", function () { rename(t); }],
     ["Download " + ((t.format || (t.file || "").split(".").pop() || "")
                     .toUpperCase()),
@@ -1786,6 +1910,7 @@ function renderAttach() {
       : "Needs sheetsage2_bf16.safetensors — get it on the Models page.";
   }
   $("coverTake").hidden = !S.reference;
+  planTools();
   const voice = segGet("segVocal");
   const v = $("btnVoice");
   const named = voice === "male" ? "Male" : voice === "female" ? "Female"
@@ -1801,6 +1926,7 @@ async function refreshStatus() {
   let st; try { st = await api("/api/status"); } catch (e) { return; }
   S.status = st;
   if (!$("lyricist").hidden) lyricistNote();
+  planTools();
   const pill = $("enginePill");
   pill.classList.toggle("on", !!st.ready);
   pill.classList.toggle("off", !st.comfy_online);
@@ -1919,7 +2045,7 @@ function wire() {
     $("lyrics").disabled = v === "instrumental";
     $("lyrics").style.opacity = v === "instrumental" ? ".45" : "1";
     renderAttach(); });
-  wireSeg("segPlan", null);
+  wireSeg("segPlan", abcNote);
   wireSeg("segCover", null);
   wireSeg("segTiled", null);
 
@@ -1955,6 +2081,7 @@ function wire() {
 
   $("lyrics").addEventListener("input", () => {
     lyricsNote();
+    if ($("abc").value.trim()) abcNote();
     S.hist.push($("lyrics").value);
     if (S.hist.length > 60) S.hist.shift();
     S.histAt = S.hist.length - 1; saveDraft(); });
@@ -1980,6 +2107,18 @@ function wire() {
   $("lyrBrief").addEventListener("input", () => store("yue.lyrBrief", $("lyrBrief").value));
   $("lyrLang").addEventListener("input", () => store("yue.lyrLang", $("lyrLang").value));
   $("llmProvider").addEventListener("change", llmProviderChanged);
+  $("btnPlan").addEventListener("click", () => startPlan("plan"));
+  $("btnTranscribe").addEventListener("click", () => startPlan("transcribe"));
+  $("btnPlanStop").addEventListener("click", () => {
+    if (PLAN.task) api("/api/tasks/" + PLAN.task + "/cancel", { method:"POST" }); });
+  $("btnStripChords").addEventListener("click", () => stripChords("both"));
+  $("btnVocalOnly").addEventListener("click", () => stripChords("Vocal"));
+  $("btnCompareAbc").addEventListener("click", compareAbc);
+  $("btnReharm").addEventListener("click", () => {
+    $("reharmRow").hidden = !$("reharmRow").hidden;
+    if (!$("reharmRow").hidden) $("reharmAsk").focus(); });
+  $("btnReharmGo").addEventListener("click", reharmonize);
+  PLAN.list = store("yue.plans") || []; renderPlans();
   $("btnLlmList").addEventListener("click", listLlmModels);
   $("btnClearStyle").addEventListener("click", () => {
     $("style").value = ""; syncChips(); saveDraft(); });
@@ -2088,6 +2227,9 @@ function wire() {
   $("btnHide").addEventListener("click", () => { $("setupVeil").hidden = true; });
   $("btnFinish").addEventListener("click", () => { $("setupVeil").hidden = true; });
   $("btnCloseCfg").addEventListener("click", () => { $("settingsVeil").hidden = true; });
+  $("btnCloseCmp").addEventListener("click", () => {
+    $("compareVeil").hidden = true;
+    document.querySelectorAll("#compareVeil audio").forEach((a) => a.pause()); });
   // Fill the dialog from the saved config the moment it opens, from a call
   // that answers instantly, and keep Save locked until the fields hold real
   // values. They used to be filled by the status poll, which can take
@@ -2129,6 +2271,8 @@ function wire() {
   document.addEventListener("keydown", (e) => {
     if (e.key === "Escape") {
       $("settingsVeil").hidden = true;
+      $("compareVeil").hidden = true;
+      document.querySelectorAll("#compareVeil audio").forEach((a) => a.pause());
       if ($("setupProgress").hidden) $("setupVeil").hidden = true;
     }
     if ((e.ctrlKey || e.metaKey) && e.key === "Enter") { e.preventDefault(); create(); }
@@ -2168,7 +2312,10 @@ async function writeLyrics() {
   const body = { want:want, brief:$("lyrBrief").value.trim(),
     style:$("style").value.trim(), lyrics:$("lyrics").value,
     title:$("songTitle").value.trim(), language:$("lyrLang").value.trim(),
-    vocal:o.vocal, duration:o.duration };
+    vocal:o.vocal, duration:o.duration, abc:$("abc").value.trim() };
+  if (want === "fit" && !body.abc) {
+    toast("Fitting lyrics needs a melody in the Score box — plan one or load a song's score.", true);
+    $("cardAbc").open = true; return; }
   if (want === "song" && !body.brief && !body.style) {
     toast("Say what the song is about first.", true); $("lyrBrief").focus(); return; }
   if (want === "lyrics" && !body.brief && !body.style) {
@@ -2224,6 +2371,7 @@ function applyLyrics(r, want) {
   $("btnLyrRevert").hidden = false;
   saveDraft();
   const done = want === "song" ? "Title, style and lyrics written."
+    : want === "fit" ? "Lyrics fitted to the score."
     : want === "polish" ? "Lyrics polished." : "Lyrics written.";
   $("lyrNote").textContent = done + " Read them through before you press Create."
     + ((r.warnings || []).length ? " " + r.warnings.join(" ") : "");
@@ -2296,6 +2444,221 @@ async function listLlmModels() {
       : "The server answered, but lists no models. Pull or load one first.";
   } catch (e) { $("llmNote").textContent = e.message; }
   finally { b.done(); }
+}
+
+/* ========================= plan first, render later ========================= */
+/* The first pass alone: melody plans (or a recording's transcription) come
+   back as scores, with no audio made. They are compared as text; the one
+   kept goes into the Score box, and Create renders only that. */
+const PLAN = { task:null, list:[] };
+function planAbility() { return (S.status && S.status.can_plan) || {}; }
+function planTools() {
+  const able = planAbility();
+  $("btnPlan").disabled = !!PLAN.task || !able.plan;
+  $("btnPlan").title = able.plan
+    ? "Write melody plans only — no audio. Compare them as text, keep one, and render just that one."
+    : "This engine cannot hand a plan back on its own (it needs the PreviewAny node).";
+  $("btnTranscribe").hidden = !S.reference;
+  $("btnTranscribe").disabled = !!PLAN.task || !able.transcribe;
+  $("btnPlanStop").hidden = !PLAN.task;
+}
+async function startPlan(kind) {
+  if (!S.status || !S.status.ready) { openSetup(); return; }
+  const p = collectParams();
+  if (kind === "plan" && !p.style) { toast("Describe the style first.", true); $("style").focus(); return; }
+  const body = Object.assign({}, p, { kind:kind, count:Number($("planCount").value),
+    reference_audio:S.reference || null, cover_mode:segGet("segCover") });
+  if (kind === "plan" && S.reference) body.reference_audio = null;
+  try {
+    const r = await api("/api/plan", { method:"POST",
+      headers:{"Content-Type":"application/json"}, body:JSON.stringify(body) });
+    PLAN.task = r.task.id; planTools();
+    $("planNote").textContent = kind === "transcribe" ? "Transcribing the recording…" : "Planning…";
+    followPlan();
+  } catch (e) { toast(e.message, true); }
+}
+async function followPlan() {
+  if (!PLAN.task) return;
+  let t;
+  try { t = await api("/api/tasks?id=" + PLAN.task + "&since=100000"); }
+  catch (e) { setTimeout(followPlan, 2000); return; }
+  const m = t.meta || {};
+  if (m.plans && m.plans.length) { PLAN.list = m.plans; store("yue.plans", PLAN.list); renderPlans(); }
+  if (t.state === "running") {
+    $("planNote").textContent = (t.detail || "Planning…") + " No audio is made until you press Create.";
+    setTimeout(followPlan, 900); return;
+  }
+  PLAN.task = null; planTools();
+  if (t.state === "done") {
+    $("planNote").textContent = m.kind === "transcribe"
+      ? "Transcribed. Use it, check and correct it, strip the chords for a melody cover, then Create."
+      : PLAN.list.length + " plan" + (PLAN.list.length === 1 ? "" : "s")
+        + " written — compare them, press Use on the one to keep, then Create renders it.";
+  } else if (t.state === "cancelled") $("planNote").textContent = "Stopped.";
+  else { $("planNote").textContent = t.detail || "Planning failed."; toast(t.detail || "Planning failed.", true); }
+}
+function renderPlans() {
+  const box = $("planList"); box.innerHTML = "";
+  PLAN.list.forEach((p, i) => {
+    const f = p.facts || {};
+    const el = document.createElement("div");
+    el.className = "plan" + (f.ok ? "" : " bad");
+    const head = p.kind === "transcribe" ? "Transcription" : "Plan " + p.n;
+    el.innerHTML = '<div class="phead"><b>' + esc(head) + "</b><span>seed " + esc(p.seed)
+      + " · " + esc(p.mode) + " · " + esc(f.ok ? scoreSummary(f) : "unreadable: " + f.error)
+      + '</span><button class="btn thin" data-use>Use</button>'
+      + '<button class="btn thin" data-show>Score</button></div><pre hidden></pre>';
+    el.querySelector("pre").textContent = p.abc;
+    el.querySelector("[data-show]").addEventListener("click", () => {
+      const pre = el.querySelector("pre"); pre.hidden = !pre.hidden; });
+    el.querySelector("[data-use]").addEventListener("click", () => usePlan(i));
+    box.appendChild(el);
+  });
+}
+function usePlan(i) {
+  const p = PLAN.list[i]; if (!p) return;
+  $("abc").value = p.abc; S.abcOrigin = p.abc;
+  // The render runs in the mode the score was made in.
+  segSet("segPlan", p.mode === "melody" ? "melody" : "full");
+  $("cardAbc").open = true; abcNote(); saveDraft();
+  toast((p.kind === "transcribe" ? "Transcription" : "Plan " + p.n)
+    + " is in the Score box. Create renders it.");
+}
+async function stripChords(keep) {
+  const text = $("abc").value.trim();
+  if (!text) { toast("There is no score to change.", true); return; }
+  try {
+    const r = await api("/api/abc/strip-chords", { method:"POST",
+      headers:{"Content-Type":"application/json"}, body:JSON.stringify({ abc:text, keep:keep }) });
+    $("abc").value = r.abc.trim(); segSet("segPlan", "melody"); abcNote(); saveDraft();
+    toast(keep === "Vocal" ? "Sung line kept; chords and instrument line removed — Melody mode set."
+      : "Chords removed, every note checked unchanged — Melody mode set.");
+  } catch (e) { toast(e.message, true); }
+}
+async function compareAbc() {
+  const now = $("abc").value.trim();
+  if (!S.abcOrigin) { toast("Load a plan, a transcription or a song's score first — "
+    + "there is nothing to compare against.", true); return; }
+  if (!now) { toast("The Score box is empty.", true); return; }
+  try {
+    const r = await api("/api/abc/compare", { method:"POST",
+      headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({ before:S.abcOrigin, after:now, voices:"Vocal" }) });
+    $("planNote").textContent = r.match
+      ? "Melody kept: every sung note has the same pitch, onset and length as when "
+        + "this score was loaded" + (r.chords_changed ? "; " + r.chords_changed + " chord symbols differ." : ".")
+      : "Melody changed — " + r.differences.join("; ") + ".";
+  } catch (e) { $("planNote").textContent = e.message; }
+}
+async function reharmonize() {
+  if (!(S.status && S.status.lyric_writer)) {
+    $("navSettings").click(); toast("Reharmonizing uses the lyric writer — choose one in Settings.", true); return; }
+  const text = $("abc").value.trim();
+  if (!text) { toast("Put a score in the box first — plan one, or load a song's.", true); return; }
+  try {
+    const r = await api("/api/abc/reharmonize", { method:"POST",
+      headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({ abc:text, ask:$("reharmAsk").value.trim(), keep:$("reharmKeep").value,
+        style:$("style").value.trim(), lyrics:$("lyrics").value }) });
+    const id = r.task.id;
+    $("btnReharmGo").hidden = true; $("btnReharmStop").hidden = false;
+    $("btnReharmStop").onclick = () => api("/api/tasks/" + id + "/cancel", { method:"POST" });
+    $("reharmDraft").hidden = false; $("reharmDraft").textContent = "";
+    const before = { abc:$("abc").value, style:$("style").value };
+    const tick = async () => {
+      let t;
+      try { t = await api("/api/tasks?id=" + id + "&since=100000"); }
+      catch (e) { setTimeout(tick, 2000); return; }
+      const m = t.meta || {};
+      if (typeof m.draft === "string") { const d = $("reharmDraft"); d.textContent = m.draft; d.scrollTop = d.scrollHeight; }
+      if (t.state === "running") { $("planNote").textContent = t.detail || "Reharmonizing…"; setTimeout(tick, 800); return; }
+      $("btnReharmGo").hidden = false; $("btnReharmStop").hidden = true; $("reharmDraft").hidden = true;
+      if (t.state === "done" && m.result) {
+        const res = m.result;
+        if (!S.abcOrigin) S.abcOrigin = before.abc;
+        S.reharmBefore = before;
+        $("abc").value = res.abc.trim();
+        if (res.style) { $("style").value = res.style; syncChips(); }
+        abcNote(); saveDraft();
+        $("planNote").textContent = "Reharmonized — melody checked note for note, "
+          + res.check.chords_changed + " chord symbols changed"
+          + (res.attempts > 1 ? " (the first answer moved the melody and was sent back)" : "")
+          + ". " + (res.changes || []).join(" · ");
+        toast("New harmony in the Score box. Create renders it.");
+      } else if (t.state === "cancelled") $("planNote").textContent = "Stopped. The score was not changed.";
+      else { $("planNote").textContent = t.detail || "Reharmonizing failed."; toast(t.detail || "Reharmonizing failed.", true); }
+    };
+    tick();
+  } catch (e) { toast(e.message, true); }
+}
+
+/* ========================= render again, and compare ========================= */
+/* Everything a song was made with goes back into the page: its score, its
+   seed and its sampling — so the next render is one acoustic pass from the
+   same plan, not another creative roll. Change one thing, render, compare. */
+function rerender(t) {
+  if (!t.abc) { toast("This song has no score to render from — it was made "
+    + "with the melody plan off.", true); return; }
+  reuse(t);
+  $("abc").value = t.abc; S.abcOrigin = t.abc; $("cardAbc").open = true;
+  if (t.seed !== undefined && t.seed !== null) $("seed").value = String(t.seed);
+  if (t.top_p) { $("topp").value = Math.round(t.top_p * 100); $("toppVal").textContent = Number(t.top_p).toFixed(2); }
+  if (t.repetition_penalty) { $("rep").value = Math.round(t.repetition_penalty * 100);
+    $("repVal").textContent = Number(t.repetition_penalty).toFixed(2); }
+  abcNote(); saveDraft();
+  toast("Its score, seed and settings are loaded. Change one thing, Create, then Compare.");
+}
+function compareWith(t) {
+  if (!S.compareWith || S.compareWith.id === t.id) {
+    S.compareWith = t;
+    toast("Now open another song's menu and choose Compare."); return; }
+  const a = S.compareWith; S.compareWith = null;
+  openCompare(a, t);
+}
+const CMP_FIELDS = [["seed","Seed"],["checkpoint","Model"],["mode","Melody plan"],
+  ["abc_source","Score"],["cover","Cover"],["cover_mode","Cover takes"],["steps","Detail"],
+  ["top_p","Lyric focus"],["repetition_penalty","Repetition"],["duration","Asked for (s)"],
+  ["seconds","Came out (s)"],["style","Style"]];
+function cmpColumn(el, t, other) {
+  el.innerHTML = "<h3>" + esc(t.title) + "</h3>";
+  const au = document.createElement("audio");
+  au.controls = true; au.preload = "none"; au.src = "/api/track/" + t.id;
+  el.appendChild(au);
+  const dl = document.createElement("dl");
+  CMP_FIELDS.forEach(([k, label]) => {
+    const v = t[k], o = other[k];
+    if ((v === undefined || v === null || v === "") && (o === undefined || o === null || o === "")) return;
+    const dt = document.createElement("dt"); dt.textContent = label;
+    const dd = document.createElement("dd");
+    dd.textContent = v === undefined || v === null ? "—"
+      : k === "abc_source" ? ({ planned:"written by YuE2", transcribed:"transcribed by SheetSage2",
+          score:"from the Score box", none:"none (plan off)" }[v] || v)
+      : typeof v === "boolean" ? (v ? "yes" : "no") : String(v);
+    if (String(v) !== String(o)) dd.className = "diff";
+    dl.appendChild(dt); dl.appendChild(dd);
+  });
+  el.appendChild(dl);
+  const pre = document.createElement("pre");
+  pre.textContent = (t.lyrics || "(no lyrics)");
+  if ((t.lyrics || "") !== (other.lyrics || "")) pre.style.outline = "1px solid rgba(255,176,32,.5)";
+  el.appendChild(pre);
+}
+async function openCompare(a, b) {
+  cmpColumn($("cmpA"), a, b); cmpColumn($("cmpB"), b, a);
+  $("compareVeil").hidden = false;
+  const note = $("cmpNote");
+  if (!a.abc || !b.abc) { note.textContent = "One of them has no score, so their melodies cannot be compared as notes."; return; }
+  if (a.abc === b.abc) { note.textContent = "Same score, character for character."; return; }
+  note.textContent = "Comparing their scores…";
+  try {
+    const r = await api("/api/abc/compare", { method:"POST",
+      headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({ before:a.abc, after:b.abc, voices:"Vocal", allow_tempo_change:true }) });
+    note.textContent = r.match
+      ? "Same sung melody in both scores" + (r.bpm[0] !== r.bpm[1] ? " (at " + r.bpm[0] + " and " + r.bpm[1] + " BPM)" : "")
+        + (r.chords_changed ? "; " + r.chords_changed + " chord symbols differ." : "; the chords match too.")
+      : "Different melodies — " + r.differences.join("; ") + ".";
+  } catch (e) { note.textContent = "Their scores could not be compared: " + e.message; }
 }
 
 /* ========================= boot ========================= */

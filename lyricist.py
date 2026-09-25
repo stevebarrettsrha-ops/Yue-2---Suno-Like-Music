@@ -27,6 +27,8 @@ from urllib.parse import urlsplit
 
 import requests
 
+import scores
+
 # id: label, wire protocol, default address, whether a key is expected, the
 # environment variable a key may come from, and the model to suggest.
 #
@@ -72,7 +74,7 @@ CONNECT_TIMEOUT = 10
 # word arrives. This is the gap allowed between chunks, not the whole write.
 READ_TIMEOUT = 300
 
-WANTS = ("song", "lyrics", "polish")
+WANTS = ("song", "lyrics", "polish", "fit")
 
 
 class LyricistError(RuntimeError):
@@ -300,6 +302,7 @@ def clean_request(body: dict) -> dict:
         "title": text("title", 120),
         "language": text("language", 60) or "English",
         "vocal": vocal if vocal in ("male", "female", "instrumental") else "",
+        "abc": text("abc", scores.MAX_ABC),
         "duration": max(10, min(duration, 900)),
     }
 
@@ -316,6 +319,9 @@ def user_prompt(req: dict) -> str:
                    "scansion, rhymes that strain, and anything YuE2 would "
                    "sing that is not a lyric. Keep the style unless it "
                    "contradicts the lyrics."),
+        "fit": ("Write lyrics that fit the melody described below, note for "
+                "note, and a title. Repeat the style unchanged on the STYLE "
+                "line."),
     }[req["want"]]
     lines = [task, ""]
     if req["brief"]:
@@ -334,7 +340,12 @@ def user_prompt(req: dict) -> str:
     minutes, seconds = divmod(req["duration"], 60)
     length = (f"{minutes} min {seconds:02d} s" if minutes else f"{seconds} s")
     lines += [f"Length: about {length} ({req['duration']} seconds)."]
-    if req["want"] == "polish" and req["lyrics"]:
+    if req["want"] == "fit":
+        lines += ["", *fit_brief(req["abc"])]
+        if req["lyrics"]:
+            lines += ["", "Lyrics to adapt (keep their meaning and images, "
+                      "change the words to fit):", req["lyrics"]]
+    elif req["want"] == "polish" and req["lyrics"]:
         lines += ["", "Draft lyrics:", req["lyrics"]]
     elif req["lyrics"] and not instrumental:
         lines += ["", "Lyrics written so far (use them as a starting point):",
@@ -424,6 +435,204 @@ def _tidy(out: dict, want: str) -> dict:
     if want == "song" and not out["style"]:
         out["warnings"].append("The writer returned no style; yours is kept.")
     return out
+
+
+def fit_brief(abc_text: str) -> list[str]:
+    """The sung sections of a score, for writing lyrics to it.
+
+    The count is of sounding notes after ties are merged: one syllable per
+    note at most, fewer where a syllable is held across several (a melisma).
+    The words are still a request — YuE2 has no syllable-to-note channel.
+    """
+    facts = scores.inspect(abc_text)
+    if not facts.get("ok"):
+        raise LyricistError("Fitting lyrics needs a score YuE Studio can "
+                            "read: " + facts.get("error", ""))
+    sung = [x for x in facts["sections"] if x["vocal_notes"]]
+    if not sung:
+        raise LyricistError("This score has no sung notes to fit lyrics to.")
+    lines = [f"The melody is at {facts['bpm']} BPM in {facts['meter']}. Its "
+             "sung sections, in order — write one lyric section per line "
+             "below, same order, tagged with the section's name:"]
+    for x in sung:
+        lines.append(f"- [{x['name'].title()}]: {x['bars']} bars, "
+                     f"{x['vocal_notes']} sung notes → at most "
+                     f"{x['vocal_notes']} syllables, fewer where a vowel is "
+                     "held across notes.")
+    lines.append("Put stressed syllables where a line lands on a long note; "
+                 "leave a breath at phrase ends. Instrumental sections are "
+                 "not listed and get no lyrics.")
+    return lines
+
+
+REHARM_PROMPT = """\
+You reharmonize scores in YuE2's native two-voice ABC. You return the complete \
+score with new chord symbols and the melody untouched, in exactly this format:
+
+STYLE: <the style line, updated only if the new harmony needs different \
+instruments or feel; otherwise repeat it unchanged>
+CHANGES: <one line per change: section, bar, old chord -> new chord, and the \
+melody note it supports>
+ABC:
+<the complete score, starting at X:1>
+
+The native dialect, which must be kept exactly:
+- The header lines stay as given: X:1, T:, M:, L:, Q:, the two V: definition \
+lines, K:. Keep every % section comment, every V: Vocal / V: Ins block, and \
+every bar grouping.
+- Chords are quoted symbols placed in the Vocal voice only, before the note or \
+rest they start on, e.g. "Am7"c8. They are allowed on rests.
+- Only these chord qualities exist: major (no suffix), m, dim, aug, 7, maj7, \
+m7, dim7, m7b5, sus4, sus2, 6, m6, 7sus4, m(maj7). Roots and slash basses \
+are note names: F#m7/C#, Bbmaj7, A7/E. Nothing else — no C13, no Cmaj9, no \
+alt, no numerals. Voicing wishes beyond these go in STYLE.
+- To change chord inside a held note, split the note with a tie: \
+"C"E16-"Am7"E16 keeps one sounding note. Tied halves must add up to the \
+original length and use only lengths 1 2 3 4 6 8 12 16 24 32 48.
+- The melody is fixed: every sounding pitch, onset and duration in the \
+voices you are told to keep stays exactly as it is. Change only chord \
+symbols, and ties needed to place them.
+
+Musical judgement:
+- Look at the chord active during each sustained or strongly placed melody \
+note. Support held notes; keep useful tension on short passing notes and \
+resolve it. Do not force every melody note to be a chord tone.
+- Give the progression a direction — secondary dominants, a ii-V, borrowed \
+minor colour, a tritone approach — and keep a sensible bass line. More \
+substitutions are not automatically better. Keep what already works.
+- Answer with the three parts only: no explanation outside CHANGES, no code \
+fence.\
+"""
+
+
+def extract_abc(text: str) -> str:
+    """The score out of an answer: from the X:1 line to the end, without a
+    code fence or anything the model added after the last bar."""
+    text = visible(text)
+    at = re.search(r"^X:1\s*$", text, re.M)
+    if not at:
+        return ""
+    lines = []
+    for line in text[at.start():].splitlines():
+        if line.strip().startswith("```"):
+            break
+        lines.append(line.rstrip())
+    while lines and not lines[-1].strip():
+        lines.pop()
+    # Anything trailing that is not ABC (a closing remark) goes.
+    while lines and not re.match(r"^(%|V:|M:|K:|[A-Za-z]:|.*\|$)", lines[-1]):
+        lines.pop()
+    return "\n".join(lines) + "\n"
+
+
+def _label(text: str, name: str) -> str:
+    m = re.search(rf"^\s*\**{name}\**\s*:\s*(.*?)\s*$", visible(text), re.M | re.I)
+    return m.group(1).strip() if m else ""
+
+
+def _changes(text: str) -> list[str]:
+    body = visible(text)
+    m = re.search(r"^\s*\**CHANGES\**\s*:(.*?)^\s*\**ABC\**\s*:", body,
+                  re.M | re.S | re.I)
+    if not m:
+        return []
+    out = [ln.strip(" -*\t") for ln in m.group(1).splitlines()]
+    return [ln for ln in out if ln][:80]
+
+
+def clean_reharm(body: dict) -> dict:
+    def text(key: str, limit: int) -> str:
+        value = body.get(key)
+        return value.strip()[:limit] if isinstance(value, str) else ""
+    keep = body.get("keep")
+    return {"abc": text("abc", scores.MAX_ABC),
+            "ask": text("ask", 1000) or "a fresh, musical reharmonization",
+            "style": text("style", 4000), "lyrics": text("lyrics", 20000),
+            "keep": keep if keep in ("Vocal", "both") else "Vocal"}
+
+
+def _collect(conn: dict, system: str, prompt: str, task, label: str) -> str:
+    got: list[str] = []
+
+    def on_text(piece: str) -> None:
+        got.append(piece)
+        if sum(map(len, got)) > MAX_CHARS * 2:
+            raise LyricistError("The answer ran far past a score's length, "
+                                "so it was stopped.")
+        shown = visible("".join(got))
+        task.set(meta={"want": "reharm", "draft": shown[-6000:]},
+                 detail=f"{label}… {len(shown)} characters")
+
+    if conn["wire"] == "anthropic":
+        _stream_anthropic(conn, system, prompt, task, on_text)
+    else:
+        _stream_openai(conn, system, prompt, task, on_text)
+    return "".join(got)
+
+
+def run_reharm(task, conn: dict, req: dict) -> None:
+    """Reharmonize under a contract, and prove the contract held.
+
+    The model's score is never handed back on its word: it has to parse as
+    native ABC and match the original's sounding notes in the kept voices
+    (scores.compare). A failure gets one repair round with the exact
+    differences; a second failure is an error, and the Score box is left as
+    it was.
+    """
+    source = req["abc"]
+    facts = scores.inspect(source)
+    if not facts.get("ok"):
+        raise LyricistError("Reharmonizing needs a score in YuE2's native "
+                            "form. " + facts.get("error", ""))
+    keep = "the sung melody (V: Vocal)" if req["keep"] == "Vocal" else \
+        "both melodies (V: Vocal and V: Ins)"
+    prompt = "\n".join([
+        "Reharmonize this score: " + req["ask"],
+        f"Keep {keep} exactly, note for note.",
+        "Style: " + (req["style"] or "(none given)"),
+        "", "Score:", source.strip()])
+    task.log(f"Asking {conn['label']} ({conn['model']}) to reharmonize.")
+    answer = ""
+    problem = ""
+    for attempt in (1, 2):
+        ask = prompt if attempt == 1 else "\n".join([
+            prompt, "", "Your previous answer was rejected:", problem,
+            "Return the complete corrected answer in the same three-part "
+            "format, with the melody exactly as in the original score.",
+            "", "Previous answer:", answer[-scores.MAX_ABC:]])
+        answer = _collect(conn, REHARM_PROMPT, ask, task,
+                          "Reharmonizing" if attempt == 1 else "Correcting")
+        if task.cancel:
+            task.log("Stopped.")
+            task.set(state="cancelled", detail="Stopped")
+            return
+        edited = extract_abc(answer)
+        if not edited:
+            problem = "It contained no score starting at X:1."
+        else:
+            try:
+                check = scores.compare(source, edited, req["keep"])
+            except scores.ScoreError as exc:
+                problem = str(exc)
+            else:
+                if not check["match"]:
+                    problem = "The melody changed: " + "; ".join(check["differences"])
+                elif not check["chords_changed"]:
+                    problem = "No chord was changed."
+                else:
+                    result = {"abc": edited, "check": check,
+                              "facts": scores.inspect(edited),
+                              "style": _label(answer, "STYLE") or req["style"],
+                              "changes": _changes(answer),
+                              "attempts": attempt}
+                    task.set(meta={"want": "reharm", "result": result},
+                             detail="Done", pct=100)
+                    task.log(f"Kept the melody; {check['chords_changed']} "
+                             "chord symbols changed.")
+                    return
+        task.log(f"Attempt {attempt} rejected: {problem}")
+    raise LyricistError("The writer's score did not keep the melody, so it "
+                        "was not used. " + problem)
 
 
 # --------------------------------------------------------------------------- #
@@ -644,6 +853,13 @@ def run(task, conn: dict, req: dict) -> None:
     if not (result["lyrics"] or result["style"]):
         raise LyricistError("The writer answered, but nothing in it could be "
                             "used. Try again, or pick a larger model.")
+    if req["want"] == "fit" and result["lyrics"]:
+        result["fit"] = scores.lyric_fit(result["lyrics"], req["abc"])
+        off = [f"{x['section']} {x['fit']} ({x['syllables']} syllables, "
+               f"{x['notes']} notes)" for x in result["fit"] if x["fit"] != "ok"]
+        if off:
+            result["warnings"].append("Rough syllable check: " + "; ".join(off)
+                                      + ".")
     for w in result["warnings"]:
         task.log(w)
     task.set(meta={"want": req["want"], "result": result},

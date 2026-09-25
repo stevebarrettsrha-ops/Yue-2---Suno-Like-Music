@@ -219,9 +219,13 @@ def run(slow: bool = False) -> Suite:
 
             row.locator('[data-act="score"]').click()
             s.check("the score opens in the editor",
-                    "Mock score" in page.input_value("#abc"))
-            s.check("and says it will be used as written",
-                    "as-is" in page.locator("#abcNote").inner_text())
+                    "V: Vocal" in page.input_value("#abc"))
+            page.wait_for_function(
+                "() => /BPM/.test(document.querySelector('#abcNote').textContent)",
+                timeout=10000)
+            s.check("and says it will be used as written, checked",
+                    "as-is" in page.locator("#abcNote").inner_text()
+                    and "88 BPM" in page.locator("#abcNote").inner_text())
             page.click("#btnClearAbc")
             s.check("clearing it hands the job back to YuE2",
                     "YuE2 will write the score" in
@@ -425,6 +429,94 @@ def run(slow: bool = False) -> Suite:
                     page.input_value("#lyrBrief"), "a late train home")
             s.check("the lyric writer threw nothing", not crashes,
                     "; ".join(crashes)[:120])
+            page.close()
+
+        # ------------------------------------------------------------------ #
+        # plan first, keep one, render only that
+        # ------------------------------------------------------------------ #
+        with comfy(delay=1) as engine, Workspace() as data, \
+                studio(engine.url, data) as app:
+            page = browser.new_page(viewport={"width": 1440, "height": 900})
+            crashes = []
+            page.on("pageerror", lambda e: crashes.append(str(e)))
+            page.goto(app.url, wait_until="networkidle")
+            page.click('.nav[data-view="create"]')
+            page.fill("#style", "folk, 90 BPM")
+            page.fill("#lyrics", "[Verse]\nla la la la la la\n[Chorus]\nhey")
+            page.click("#cardAbc summary")
+            page.wait_for_function(
+                "() => !document.querySelector('#btnPlan').disabled", timeout=15000)
+            page.select_option("#planCount", "3")
+            page.click("#btnPlan")
+            page.wait_for_function(
+                "() => document.querySelectorAll('#planList .plan').length === 3"
+                " && /written/.test(document.querySelector('#planNote').textContent)",
+                timeout=30000)
+            s.check("Plan first writes three plans and no song",
+                    not requests.get(f"{app.url}/api/library", timeout=10).json())
+            s.check("each shows its seed and what is in it",
+                    "BPM" in page.locator("#planList .plan").first.inner_text()
+                    and "seed" in page.locator("#planList .plan").first.inner_text())
+            page.locator("#planList .plan [data-use]").nth(1).click()
+            s.check("Use puts that plan in the Score box",
+                    "V: Vocal" in page.input_value("#abc"))
+            page.click("#cardMore summary")
+            page.locator('#segPlan button[data-v="melody"]').click()
+            page.wait_for_function(
+                "() => /Melody mode does not remove them/.test("
+                "document.querySelector('#abcNote').textContent)", timeout=10000)
+            s.check("a score with chords in Melody mode is flagged", True)
+            page.click("#btnStripChords")
+            page.wait_for_function(
+                "() => /no chords/.test(document.querySelector('#abcNote').textContent)",
+                timeout=10000)
+            s.check("Strip chords takes them out and sets Melody",
+                    page.locator('#segPlan button.on').get_attribute("data-v") == "melody")
+            page.click("#btnCompareAbc")
+            page.wait_for_function(
+                "() => /Melody kept/.test(document.querySelector('#planNote').textContent)",
+                timeout=10000)
+            s.check("and the melody is checked unchanged against the plan", True)
+            page.click("#btnCreate")
+            page.wait_for_function(
+                "() => /Song ready/.test(document.querySelector('#toast').textContent)",
+                timeout=40000)
+            track = requests.get(f"{app.url}/api/library", timeout=10).json()[0]
+            s.check("Create renders exactly the chosen, edited score",
+                    track["abc"] == page.input_value("#abc").strip()
+                    and track["mode"] == "melody", track.get("mode", ""))
+            first = track
+            page.fill("#seed", "")
+            page.locator('#trackList .trow [data-act="menu"]').first.click()
+            page.get_by_text("Render again from its plan", exact=True).click()
+            s.check("Render again loads the song's score and its seed",
+                    page.input_value("#abc").strip() == first["abc"]
+                    and page.input_value("#seed") == str(first["seed"]))
+            page.fill("#style", "folk, 90 BPM, brushed drums")
+            page.click("#btnCreate")
+            page.wait_for_function(
+                "() => document.querySelectorAll('#trackList .trow').length === 2",
+                timeout=40000)
+            second = requests.get(f"{app.url}/api/library", timeout=10).json()[0]
+            s.check("the new render keeps the plan and seed, with the one change",
+                    second["abc"] == first["abc"] and second["seed"] == first["seed"]
+                    and second["style"] != first["style"])
+            page.locator('#trackList .trow [data-act="menu"]').nth(1).click()
+            page.get_by_text("Compare with…", exact=True).click()
+            page.locator('#trackList .trow [data-act="menu"]').first.click()
+            page.get_by_text("Compare with “", exact=False).click()
+            page.wait_for_selector("#compareVeil:not([hidden])", timeout=5000)
+            s.check("Compare opens both songs side by side, each playable",
+                    page.locator("#compareVeil audio").count() == 2)
+            s.check("with what differs marked",
+                    page.locator("#cmpA dd.diff").count() >= 1
+                    and "brushed drums" in page.locator("#compareVeil").inner_text())
+            s.check("and the scores named the same",
+                    "Same score" in page.locator("#cmpNote").inner_text())
+            page.keyboard.press("Escape")
+            s.check("escape closes the comparison",
+                    page.locator("#compareVeil").is_hidden())
+            s.check("planning threw nothing", not crashes, "; ".join(crashes)[:120])
             page.close()
 
         # ------------------------------------------------------------------ #
