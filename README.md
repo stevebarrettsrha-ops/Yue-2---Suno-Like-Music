@@ -166,6 +166,29 @@ Run with me into the sunlight
 
 Leave lyrics empty, or switch Instrumental on, for a vocal-free track.
 
+**Writing lyrics for you (optional).** The pen button on the Lyrics card opens
+the lyric writer. Say in a line what the song is about, pick *Whole song*
+(title, style and lyrics), *Lyrics only* (for the style you already have) or
+*Polish mine* (tidy lyrics that are already there), and press **Write**. The
+answer streams into a draft pane; **Stop** ends it; **Undo** and **Put back**
+bring back what was there before.
+
+It uses a chat model you already have, chosen under **Settings → Lyric
+writer**:
+
+| Service | Key | Notes |
+|---|---|---|
+| Ollama, LM Studio, llama.cpp server | none | Runs on this computer. Press **List** to pick a model it has loaded. |
+| Claude (Anthropic) | yes | Defaults to `claude-opus-5`; any Claude model name works. |
+| OpenAI, OpenRouter, any OpenAI-compatible server | usually | Give the API base, including `/v1`. |
+
+The key is saved in `data/config.json`, shown back only as its last four
+characters, and bound to the address it was entered for: change the address
+and the key is dropped rather than sent somewhere new. A key goes only over
+`https://`, or to this computer. `ANTHROPIC_API_KEY`, `OPENAI_API_KEY` and
+`OPENROUTER_API_KEY` are used when set and no key is saved. Nothing is sent to
+the writer until you press **Write**, and making songs never needs it.
+
 **More options**
 
 - *Melody plan* — `full` writes melody and chords before rendering audio
@@ -314,8 +337,10 @@ server.py      Flask API — setup, jobs, library, audio streaming
 bootstrap.py   Python/ComfyUI discovery, installs, model downloads, process control
 manager.py     Background tasks — dependency installs and HuggingFace downloads
 comfy.py       Builds the YuE2 graph from ComfyUI's /object_info schema, queues it
+lyricist.py    The optional lyric writer — chat-model client, prompt, answer parsing
 web/index.html The interface — one file, no build step
 assets/        yue2_full_reference.json, the workflow the graph mirrors
+docs/          Design notes — what to take from the Music Production Toolkit
 data/          config.json, library.json, tracks/ (created on first run)
 .venv/         YuE Studio's own packages, built by the launcher on first run
 ```

@@ -113,6 +113,13 @@ def unit(s: Suite) -> None:
     lyricist.apply_settings(cfg, {"base": "https://elsewhere.example/v1"})
     s.check("moving the address drops the key instead of sending it on",
             not cfg.get("llm_key") and lyricist.key_of(cfg) == ("", ""))
+    switched = {"llm_provider": "custom", "llm_base": "http://127.0.0.1:9/v1",
+                "llm_model": "qwen3:8b"}
+    lyricist.apply_settings(switched, {"provider": "anthropic"})
+    s.check("switching service starts from its own address and model",
+            lyricist.base_of(switched) == "https://api.anthropic.com"
+            and lyricist.settings_view(switched)["model"] == "claude-opus-5",
+            str(switched))
     s.fails_with("a key with a line break is refused",
                  lambda: lyricist.apply_settings(cfg, {"key": "ab\ncd"}),
                  lyricist.LyricistError, "printable")

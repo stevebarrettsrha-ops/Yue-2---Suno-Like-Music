@@ -15,7 +15,7 @@ import requests
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from harness import Suite, Workspace, comfy, safetensors_stub, studio
+from harness import Suite, Workspace, comfy, llm, safetensors_stub, studio
 
 CHROMIUM = "/opt/pw-browsers/chromium"
 
@@ -349,6 +349,81 @@ def run(slow: bool = False) -> Suite:
             s.check("escape closes settings",
                     page.locator("#settingsVeil").is_hidden())
             s.check("nothing threw while all that happened", not crashes,
+                    "; ".join(crashes)[:120])
+            page.close()
+
+        # ------------------------------------------------------------------ #
+        # the lyric writer, set up in Settings and used from the Create page
+        # ------------------------------------------------------------------ #
+        with comfy(delay=1) as engine, llm() as model, Workspace() as data, \
+                studio(engine.url, data) as app:
+            page = browser.new_page(viewport={"width": 1440, "height": 900})
+            crashes = []
+            page.on("pageerror", lambda e: crashes.append(str(e)))
+            page.goto(app.url, wait_until="networkidle")
+            page.click('.nav[data-view="create"]')
+            page.click("#btnLyricist")
+            s.check("the Write button opens the lyric writer in the card",
+                    page.locator("#lyricist").is_visible()
+                    and page.locator("#cardLyrics").get_attribute("open") is not None)
+            s.check("which says no writer is set up yet",
+                    "No lyric writer" in page.locator("#lyrNote").inner_text())
+
+            page.click("#navSettings")
+            page.wait_for_function(
+                "() => document.querySelector('#llmProvider').options.length > 1",
+                timeout=10000)
+            page.select_option("#llmProvider", "anthropic")
+            s.equal("choosing a service fills in its address",
+                    page.input_value("#llmBase"), "https://api.anthropic.com")
+            s.check("and says it needs a key",
+                    "Needed" in page.locator("#llmKeyNote").inner_text())
+            page.select_option("#llmProvider", "custom")
+            page.fill("#llmBase", model.url + "/v1")
+            page.click("#btnLlmList")
+            page.wait_for_function(
+                "() => document.querySelector('#llmModels').options.length === 2",
+                timeout=10000)
+            s.check("List asks the server for its models",
+                    page.input_value("#llmModel") == "gemma3:12b")
+            page.fill("#llmModel", "qwen3:8b")
+            page.click("#btnSaveCfg")
+            page.wait_for_function(
+                "() => /Saved/.test(document.querySelector('#toast').textContent)",
+                timeout=10000)
+            page.keyboard.press("Escape")
+            page.wait_for_function(
+                "() => /Uses the lyric writer/.test("
+                "document.querySelector('#lyrNote').textContent)", timeout=15000)
+            s.check("once saved, the writer is ready on the Create page", True)
+
+            page.fill("#lyrics", "my old draft")
+            page.fill("#style", "old style")
+            page.fill("#lyrBrief", "a late train home")
+            page.click("#btnLyrWrite")
+            page.wait_for_function(
+                "() => document.querySelector('#songTitle').value === "
+                "'Last Train Home'", timeout=20000)
+            s.check("Write fills the title, style and lyrics",
+                    page.input_value("#style").startswith("English, indie folk")
+                    and page.input_value("#lyrics").startswith("[Verse]"))
+            s.check("with none of the model's reasoning",
+                    "<think>" not in page.input_value("#lyrics"))
+            s.check("and offers to put back what was there",
+                    page.locator("#btnLyrRevert").is_visible())
+            page.click("#btnUndo")
+            s.equal("Undo steps the lyrics back to the old draft",
+                    page.input_value("#lyrics"), "my old draft")
+            page.click("#btnRedo")
+            page.click("#btnLyrRevert")
+            s.check("Put back restores the style and lyrics together",
+                    page.input_value("#style") == "old style"
+                    and page.input_value("#lyrics") == "my old draft")
+            page.reload(wait_until="networkidle")
+            page.click('.nav[data-view="create"]')
+            s.equal("the brief is still there after a reload",
+                    page.input_value("#lyrBrief"), "a late train home")
+            s.check("the lyric writer threw nothing", not crashes,
                     "; ".join(crashes)[:120])
             page.close()
 

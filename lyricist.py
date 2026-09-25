@@ -197,6 +197,12 @@ def apply_settings(cfg: dict, body: dict) -> dict:
     pid = body.get("provider")
     if isinstance(pid, str) and pid in PROVIDERS:
         change["llm_provider"] = pid
+        if pid != (cfg.get("llm_provider") or DEFAULT_PROVIDER):
+            # A new service starts from its own address and model, not the
+            # last one's: Claude asked for "qwen3:8b" at Ollama's port is two
+            # mistakes the person never made.
+            change["llm_base"] = ""
+            change["llm_model"] = ""
     if isinstance(body.get("base"), str):
         base = clean_base(body["base"])
         if body["base"].strip() and not base:
