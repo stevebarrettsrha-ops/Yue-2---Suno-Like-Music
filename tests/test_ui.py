@@ -31,7 +31,10 @@ def available() -> str:
 def _browser(pw):
     return pw.chromium.launch(
         executable_path=CHROMIUM if Path(CHROMIUM).exists() else None,
-        args=["--autoplay-policy=no-user-gesture-required", "--mute-audio"])
+        args=["--autoplay-policy=no-user-gesture-required", "--mute-audio",
+              # A microphone that plays a tone and never asks: the recorder is
+              # tested for real, with nobody there to click Allow.
+              "--use-fake-ui-for-media-stream", "--use-fake-device-for-media-stream"])
 
 
 def run(slow: bool = False) -> Suite:
@@ -130,7 +133,11 @@ def run(slow: bool = False) -> Suite:
                     page.evaluate("() => collectParams().cover_mode"), "full")
             page.click('#segCover [data-v="melody"]')
             page.click("#btnAudio")
-            s.check("one click removes it",
+            s.check("the Audio door opens its panel, naming what is attached",
+                    page.locator("#audioPanel").is_visible()
+                    and "tiny.wav" in page.locator("#refAttached").inner_text())
+            page.click("#btnRefRemove")
+            s.check("and Remove takes it away",
                     "Audio" in page.locator("#btnAudio").inner_text()
                     and page.evaluate("() => collectParams().reference_audio")
                     is None)
@@ -138,13 +145,28 @@ def run(slow: bool = False) -> Suite:
                     page.evaluate("() => $('coverTake').hidden")
                     and page.evaluate("() => collectParams().cover_mode")
                     == "melody")
+            page.click("#btnVoice")
+            s.check("the Voice door opens its panel and closes Audio's",
+                    page.locator("#voicePanel").is_visible()
+                    and page.locator("#audioPanel").is_hidden())
             seen = []
-            for _ in range(3):
-                page.click("#btnVoice"); time.sleep(0.3)
+            for v in ("male", "female", ""):
+                page.click(f'#segVoice [data-v="{v}"]'); time.sleep(0.2)
                 seen.append(page.locator("#btnVoice").inner_text().strip())
-            s.check("the voice button cycles male, female and back to Any",
-                    seen == ["Voice: Male", "Voice: Female", "Voice"],
-                    str(seen))
+            s.check("choosing a voice shows on the bar, and Any clears it",
+                    seen == ["Voice: Male", "Voice: Female", "Voice"], str(seen))
+            page.click('#segVoice [data-v="female"]')
+            s.equal("and is the same choice as More Options' Vocal",
+                    page.evaluate("() => segGet('segVocal')"), "female")
+            page.fill("#voiceDesc", "breathy alto")
+            s.check("a described voice joins the style that is sent",
+                    "breathy alto" in page.evaluate("() => collectParams().style")
+                    and "female vocal" in page.evaluate("() => collectParams().style"))
+            page.fill("#voiceDesc", "")
+            page.click('#segVoice [data-v=""]')
+            page.click("#btnVoice")
+            s.check("pressing the door again closes it",
+                    page.locator("#voicePanel").is_hidden())
 
             before = page.input_value("#style")
             name = page.locator("#styleChips .chip:not(.on)").first.inner_text()
@@ -429,6 +451,106 @@ def run(slow: bool = False) -> Suite:
                     page.input_value("#lyrBrief"), "a late train home")
             s.check("the lyric writer threw nothing", not crashes,
                     "; ".join(crashes)[:120])
+            page.close()
+
+        # ------------------------------------------------------------------ #
+        # Audio, Voice and Inspo: record, browse, sing a melody, start from a song
+        # ------------------------------------------------------------------ #
+        with comfy(delay=1) as engine, Workspace() as data, \
+                studio(engine.url, data) as app:
+            page = browser.new_page(viewport={"width": 1440, "height": 900})
+            crashes = []
+            page.on("pageerror", lambda e: crashes.append(str(e)))
+            page.on("dialog", lambda d: d.accept())
+            page.goto(app.url, wait_until="networkidle")
+            page.click('.nav[data-view="create"]')
+            s.check("Audio, Voice and Inspo sit in one bar",
+                    page.locator(".addrow .addbtn").count() == 3)
+            s.check("and the lyric writer waits at the foot of the lyrics box",
+                    page.locator("#cardLyrics .lyrfoot #btnLyricist").is_visible())
+
+            page.click("#btnAudio")
+            page.click('#segAudioTab [data-v="record"]')
+            page.click("#btnRec")
+            page.wait_for_function(
+                "() => document.querySelector('#recTime').textContent !== '0:00'",
+                timeout=10000)
+            s.check("recording starts and counts", True)
+            page.click("#btnRec")
+            page.wait_for_selector("#btnRecUse:not([hidden])", timeout=10000)
+            s.check("stopping offers it to listen back",
+                    page.locator("#recPreview").is_visible())
+            page.click("#btnRecUse")
+            page.wait_for_function(
+                "() => /Recording/.test(document.querySelector('#btnAudio').textContent)",
+                timeout=15000)
+            s.check("a recording becomes the reference, named on the bar",
+                    page.evaluate("() => collectParams().reference_audio") is not None)
+            refs = requests.get(f"{app.url}/api/references", timeout=10).json()
+            s.check("and is kept to use again",
+                    len(refs) == 1 and refs[0]["kind"] == "recording", str(refs)[:120])
+
+            page.click("#btnRefRemove")
+            page.click('#segAudioTab [data-v="browse"]')
+            page.wait_for_selector("#refList .refrow", timeout=10000)
+            s.check("Browse lists it", "Recording" in page.locator("#refList").inner_text())
+            page.locator("#refList .refrow").first.get_by_text("Use", exact=True).click()
+            page.wait_for_function(
+                "() => /Recording/.test(document.querySelector('#btnAudio').textContent)",
+                timeout=10000)
+            s.check("and Use attaches it again", True)
+            page.click("#btnRefRemove")
+
+            # sing the tune: record, transcribe, into the Score box
+            page.click("#btnVoice")
+            page.click("#btnSingIt")
+            s.check("Sing your melody opens the recorder, aimed at the melody",
+                    page.locator("#audioRecord").is_visible()
+                    and "melody" in page.locator("#btnRecUse").inner_text())
+            page.click("#btnRec"); time.sleep(1.2); page.click("#btnRec")
+            page.wait_for_selector("#btnRecUse:not([hidden])", timeout=10000)
+            page.click("#btnRecUse")
+            page.wait_for_function(
+                "() => /V: Vocal/.test(document.querySelector('#abc').value)",
+                timeout=30000)
+            s.check("your tune comes back as the song's score",
+                    page.evaluate("() => segGet('segPlan')") == "melody")
+            s.check("without making the song a cover",
+                    page.evaluate("() => collectParams().reference_audio") is None)
+
+            # a song to be inspired by
+            page.fill("#style", "dream pop, 100 BPM")
+            page.fill("#lyrics", "[Verse]\nstreetlights hum\nwe drive on")
+            page.click("#btnCreate")
+            page.wait_for_function(
+                "() => document.querySelectorAll('#trackList .trow').length === 1",
+                timeout=40000)
+            page.fill("#style", "")
+            page.click("#btnInspo")
+            page.wait_for_selector("#inspoList .refrow", timeout=10000)
+            s.check("Inspo offers the songs you made",
+                    "Streetlights" in page.locator("#inspoList").inner_text()
+                    or "Dream Pop" in page.locator("#inspoList").inner_text(),
+                    page.locator("#inspoList").inner_text()[:80])
+            s.check("and the recording you transcribed, by tempo and key",
+                    "BPM" in page.locator("#inspoFromRec").inner_text())
+            row = page.locator("#inspoList .refrow").first
+            row.get_by_text("Style", exact=True).click()
+            s.equal("Style takes that song's style",
+                    page.input_value("#style"), "dream pop, 100 BPM")
+            row.get_by_text("Words", exact=True).click()
+            s.check("Words hands its idea to the lyric writer",
+                    page.locator("#lyricist").is_visible()
+                    and "In the spirit of" in page.input_value("#lyrBrief")
+                    and "streetlights hum" in page.input_value("#lyrBrief"))
+            page.click("#btnClearAll")
+            s.check("the bin clears the song to start over",
+                    page.input_value("#style") == "" and page.input_value("#lyrics") == ""
+                    and page.input_value("#abc") == "")
+            page.click("#btnUndo")
+            s.check("and Undo brings the lyrics back",
+                    "streetlights" in page.input_value("#lyrics"))
+            s.check("none of that threw", not crashes, "; ".join(crashes)[:120])
             page.close()
 
         # ------------------------------------------------------------------ #

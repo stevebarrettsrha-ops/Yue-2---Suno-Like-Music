@@ -240,6 +240,18 @@
     loads all of it, and **Compare** shows two songs' records side by side.
     Drop a field and a render stops being reproducible.
 
+32. **Audio in means melody in — never a voice.** YuE2 has no
+    audio-reference input; SheetSage2 reads notes. So **Voice** is words (the
+    male/female choice and the description both join the style text, like
+    rule "What the UI maps onto" says) plus *Sing or hum your melody*, which
+    transcribes a recording into the Score box and leaves the song *not* a
+    cover. Do not label anything "your voice" or suggest cloning: the page
+    says what is taken from audio, and that is the tune. Uploads and browser
+    recordings are kept in `data/references/` *before* a copy goes to
+    ComfyUI's input folder (rule 10: ComfyUI is not storage), so a ComfyUI
+    that is down loses nothing. Reference ids are 12 hex characters and files
+    are plain names inside that folder; nothing else is served or deleted.
+
 ## Validation gate — run after any edit
 
 ```bash
@@ -257,14 +269,14 @@ node --check /tmp/app.js
 A missing function declaration in the inline script kills all interactivity
 silently — `node --check` is not optional.
 
-`python tests/run.py` runs that gate and everything else (698 checks, about
-four minutes); `python tests/run.py gate` is just the block above. Run the
+`python tests/run.py` runs that gate and everything else (735 checks, about
+five minutes); `python tests/run.py gate` is just the block above. Run the
 whole suite before pushing. Tests take their own port and their own
 `YUE_STUDIO_DATA` directory, so they never touch a real library. Four of them
 need `ffmpeg` on PATH and fail without it — that is the machine, not the code.
-The last 102 are the browser group and need Playwright (`pip install -r
+The last 125 are the browser group and need Playwright (`pip install -r
 requirements-dev.txt && python -m playwright install chromium`); without it
-that group steps aside and the run stops at 596, which is a short count and
+that group steps aside and the run stops at 610, which is a short count and
 not a pass to compare against.
 
 `python tests/run.py engine` is the group that owns real ComfyUI processes:

@@ -29,7 +29,7 @@ python -m playwright install chromium
 | `engine` | The engine process itself: the console endpoint, all four restart routes, taking a port back from an orphan, refusing to kill what is not ComfyUI, naming a supervisor that puts it straight back, the stale model scan, and what a launch does to an engine that is already up. |
 | `hardening` | Fields of the wrong type, paths that try to climb out, requests addressed elsewhere, and config or library files damaged behind the app's back. |
 | `load` | 300 requests at once, 48 songs queued together with deletes landing on top, then what the process looks like afterwards. |
-| `ui` | The interface in a real browser — making, playing, sorting, stopping, setting up, writing lyrics with a writer chosen in Settings, planning first, and comparing two songs. Any uncaught script error fails the run. |
+| `ui` | The interface in a real browser — making, playing, sorting, stopping, setting up, writing lyrics with a writer chosen in Settings, planning first, comparing two songs, and the Audio, Voice and Inspo panels — recording included, through Chromium's fake microphone. Any uncaught script error fails the run. |
 
 ## How it stays out of your way
 

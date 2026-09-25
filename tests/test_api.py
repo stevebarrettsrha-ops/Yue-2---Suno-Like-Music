@@ -48,6 +48,41 @@ def run(slow: bool = False) -> Suite:
                                                "audio/wav")}, timeout=20).json()
         s.check("a reference song uploads", upload.get("ok"))
 
+        # -- references: kept, listed, played, reused and deleted ----------
+        s.check("and is kept under Browse",
+                (upload.get("reference") or {}).get("kind") == "upload")
+        rec = requests.post(f"{api}/api/references", data={"kind": "recording"},
+                            files={"file": ("blob", io.BytesIO(b"\x1aE\xdf\xa3ab"),
+                                            "audio/webm")}, timeout=20).json()
+        s.check("a browser recording with no file name is known by its type",
+                rec.get("ok") and rec["reference"]["kind"] == "recording"
+                and rec["reference"]["name"].startswith("Recording"), str(rec)[:120])
+        listed = requests.get(f"{api}/api/references", timeout=10).json()
+        s.equal("both are listed, newest first",
+                [r["kind"] for r in listed], ["recording", "upload"])
+        rid = listed[0]["id"]
+        s.equal("a kept one can be listened to",
+                requests.get(f"{api}/api/references/{rid}/audio", timeout=10).status_code, 200)
+        s.check("and sent to ComfyUI again to use",
+                requests.post(f"{api}/api/references/{rid}/use", timeout=20).json().get("name"))
+        r = requests.post(f"{api}/api/references",
+                          files={"file": ("notes.txt", io.BytesIO(b"hi"), "text/plain")},
+                          timeout=20)
+        s.equal("something that is not audio is refused", r.status_code, 400)
+        r = requests.post(f"{api}/api/references",
+                          files={"file": ("empty.wav", io.BytesIO(b""), "audio/wav")},
+                          timeout=20)
+        s.equal("so is an empty file", r.status_code, 400)
+        for bad in ("../library", "zzzzzzzzzzzz", "%2e%2e"):
+            s.check(f"a reference id of {bad!r} reaches nothing",
+                    requests.get(f"{api}/api/references/{bad}/audio",
+                                 timeout=10).status_code == 404)
+        requests.delete(f"{api}/api/references/{rid}", timeout=10)
+        s.equal("delete removes it from the list",
+                len(requests.get(f"{api}/api/references", timeout=10).json()), 1)
+        s.check("and its file from disk",
+                not any(p.name.startswith(rid) for p in (data / "references").iterdir()))
+
         songs = {
             "a plain song": {"style": "roots reggae, 74 BPM",
                              "lyrics": "[verse]\nsunlight on the water"},
@@ -71,6 +106,17 @@ def run(slow: bool = False) -> Suite:
 
         library = requests.get(f"{api}/api/library", timeout=10).json()
         s.equal("every song reached the library", len(library), len(songs))
+
+        # -- one of your own songs as the reference -------------------------
+        first = requests.get(f"{api}/api/library", timeout=10).json()
+        if first:
+            r = requests.post(f"{api}/api/track/{first[0]['id']}/as-reference",
+                              timeout=20).json()
+            s.check("a finished song can be the next song's reference",
+                    r.get("ok") and r.get("name"), str(r)[:100])
+        s.equal("a song that does not exist cannot",
+                requests.post(f"{api}/api/track/nope/as-reference",
+                              timeout=10).status_code, 404)
         s.check("the cover is marked as one",
                 any(t["cover"] for t in library))
         s.check("the instrumental is named from its style",
