@@ -1108,6 +1108,27 @@ function wireSeg(id, onChange) {
   $(id).querySelectorAll("button").forEach((b) => b.addEventListener("click", () => {
     segSet(id, b.dataset.v); if (onChange) onChange(b.dataset.v); saveDraft(); }));
 }
+/* A checkpoint heavier than the card cannot sit in video memory while the
+   song renders, so ComfyUI swaps it in and out for every step. It still
+   works — it just takes hours instead of half an hour, with nothing on the
+   page to say why. .85 leaves room for the activations the render needs
+   beside the weights. */
+function tooBigForCard(name) {
+  const st = S.status || {};
+  const size = (st.checkpoint_sizes || {})[name] || 0;
+  return !!(size && st.vram_total && size > st.vram_total * 0.85);
+}
+function ckptHint(name) {
+  const base = "Which song model to load. Auto prefers the int8 checkpoint, "
+    + "which fits on far more cards; pick bf16 by name for the full-precision one.";
+  if (!name || !tooBigForCard(name)) return base;
+  const st = S.status || {};
+  const gb = (n) => (n / 1e9).toFixed(1) + " GB";
+  return name + " is " + gb(st.checkpoint_sizes[name]) + " and this card has "
+    + gb(st.vram_total) + ", so it cannot stay in video memory while the song "
+    + "renders. It will still work, but far more slowly. The int8 model is the "
+    + "same model, quantised to fit.\n\n" + base;
+}
 function readOpts() {
   const automatic = (S.status && S.status.recommended_duration) || 180;
   const picked = $("duration").value;
@@ -2066,6 +2087,7 @@ async function refreshStatus() {
   $("createLabel").textContent = st.ready ? "Create" : "Set up the engine";
   if (st.checkpoints) {
     const sel = $("ckpt");
+    sel.title = ckptHint(sel.value);
     // S.wantCkpt is the choice that outlives a reload; sel.value is the one
     // being made right now. A model that is not in the list yet — the engine
     // restarting, a download just finished — keeps its place in wantCkpt and
@@ -2083,7 +2105,8 @@ async function refreshStatus() {
       sel.innerHTML = '<option value="">auto</option>';
       st.checkpoints.forEach((c) => {
         const o = document.createElement("option");
-        o.value = c; o.textContent = c.replace(/\.safetensors$/, "");
+        o.value = c; o.textContent = c.replace(/\.safetensors$/, "")
+          + (tooBigForCard(c) ? " — slow on this card" : "");
         sel.appendChild(o);
       });
       // Seeded as the list appears — a reload, or a model that has just
@@ -2180,7 +2203,13 @@ function wire() {
   // empty value back matters too, or choosing auto would be undone by the
   // remembered pick on the next status refresh.
   $("ckpt").addEventListener("change", () => {
-    S.wantCkpt = $("ckpt").value; saveDraft(); });
+    S.wantCkpt = $("ckpt").value;
+    $("ckpt").title = ckptHint($("ckpt").value);
+    if (tooBigForCard($("ckpt").value)) {
+      toast("That model is larger than this card's memory — it will render "
+            + "much more slowly. Hover the selector for the numbers.", true);
+    }
+    saveDraft(); });
   $("btnCount").addEventListener("click", () => {
     S.count = S.count % 4 + 1; $("btnCount").textContent = "×" + S.count; });
   $("btnCreate").addEventListener("click", create);

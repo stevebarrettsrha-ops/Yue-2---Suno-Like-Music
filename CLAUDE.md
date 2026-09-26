@@ -260,6 +260,18 @@
     that is down loses nothing. Reference ids are 12 hex characters and files
     are plain names inside that folder; nothing else is served or deleted.
 
+31. **A model heavier than the card is named as such before it is picked.**
+    It does not fail — ComfyUI swaps it in and out for every step — so
+    `explain_failure()` never sees it and the only symptom is a song that took
+    half an hour taking most of a day. `/api/status` therefore carries
+    `vram_total` (from the engine's own device list) and `checkpoint_sizes`
+    (stat'd off the disk, never the rounded figures in `MODELS`), and the
+    picker marks any option over 85% of the card "slow on this card", with the
+    two numbers in its tooltip. Both readings are load-bearing: a size of 0 —
+    a checkpoint ComfyUI lists from a folder we cannot see — and a
+    `vram_total` of 0 — an engine that lists no device — must both mean *say
+    nothing*, never warn on a guess.
+
 ## Validation gate — run after any edit
 
 ```bash
@@ -277,14 +289,14 @@ node --check /tmp/app.js
 A missing function declaration in the inline script kills all interactivity
 silently — `node --check` is not optional.
 
-`python tests/run.py` runs that gate and everything else (742 checks, about
+`python tests/run.py` runs that gate and everything else (748 checks, about
 five minutes); `python tests/run.py gate` is just the block above. Run the
 whole suite before pushing. Tests take their own port and their own
 `YUE_STUDIO_DATA` directory, so they never touch a real library. Four of them
 need `ffmpeg` on PATH and fail without it — that is the machine, not the code.
 The last 125 are the browser group and need Playwright (`pip install -r
 requirements-dev.txt && python -m playwright install chromium`); without it
-that group steps aside and the run stops at 617, which is a short count and
+that group steps aside and the run stops at 623, which is a short count and
 not a pass to compare against.
 
 `python tests/run.py engine` is the group that owns real ComfyUI processes:

@@ -12,6 +12,7 @@ import requests
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from harness import (Suite, Workspace, comfy, fake_install, finish_jobs,
+                     safetensors_stub,
                      studio, wait_for)
 
 
@@ -240,6 +241,41 @@ def run(slow: bool = False) -> Suite:
                 and tracks[0].get("duration") == 180
                 and not tracks[0].get("abc"),
                 job.get("error", job.get("stage", "job vanished")))
+
+    # -- the page is told what fits on the card ----------------------------
+    # A checkpoint heavier than the card still renders: ComfyUI swaps it in
+    # and out for every step. Nothing said so, and the only symptom was a
+    # song that took half an hour taking most of a day.
+    CARD = 8 * 10**9
+    with comfy(delay=1, MOCK_VRAM=str(CARD)) as engine, Workspace() as ws:
+        models = ws / "models"
+        safetensors_stub(models / "checkpoints" / "yue2_3b_int8_convrot.safetensors",
+                         3_960_000_000)
+        safetensors_stub(models / "checkpoints" / "yue2_3b_bf16.safetensors",
+                         7_800_000_000)
+        with studio(engine.url, ws / "data", models_dir=str(models)) as app:
+            st = requests.get(f"{app.url}/api/status", timeout=10).json()
+            s.check("status reports the card's memory",
+                    st.get("vram_total") == CARD, str(st.get("vram_total")))
+            sizes = st.get("checkpoint_sizes") or {}
+            s.check("and a size for every checkpoint it offers",
+                    set(sizes) == set(st.get("checkpoints") or []),
+                    f"{sorted(sizes)} vs {sorted(st.get('checkpoints') or [])}")
+            s.check("the weights are measured off the disk",
+                    sizes.get("yue2_3b_bf16.safetensors") == 7_800_000_000
+                    and sizes.get("yue2_3b_int8_convrot.safetensors")
+                    == 3_960_000_000, str(sizes))
+            # What the page decides from those two numbers.
+            fits = lambda n: sizes[n] <= st["vram_total"] * 0.85
+            s.check("bf16 is seen as too big for an 8 GB card",
+                    not fits("yue2_3b_bf16.safetensors"))
+            s.check("and int8 is seen as fitting it",
+                    fits("yue2_3b_int8_convrot.safetensors"))
+    with comfy(delay=1) as engine, Workspace() as data, \
+            studio(engine.url, data) as app:
+        st = requests.get(f"{app.url}/api/status", timeout=10).json()
+        s.check("an engine that lists no card reports no memory, not a guess",
+                st.get("vram_total") == 0, str(st.get("vram_total")))
 
     # -- a song waiting its turn is not charged for the wait ---------------
     # ComfyUI renders one at a time. The second of a pair used to start its
