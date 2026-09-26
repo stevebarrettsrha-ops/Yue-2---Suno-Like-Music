@@ -138,6 +138,21 @@ def run(slow: bool = False) -> Suite:
             song = requests.get(f"{api}/api/library", timeout=10).json()[0]
             s.equal(f"a song asked to run {asked}s is asked for as {asked}s",
                     song["duration"], asked)
+            s.check(f"and a {asked}s limit a 3s song never reached is not "
+                    "called a cut", song.get("cut") is False, str(song.get("cut")))
+
+        # -- a song that runs into its limit says so -----------------------
+        # YuE2 stops at max_duration whether or not the song has ended, and
+        # the only word on it is a warning in the engine's log. The stand-in
+        # renders 3s, so a 3s limit is one it ran into.
+        requests.post(f"{api}/api/generate",
+                      json={"style": "cut short", "lyrics": "x", "duration": 3},
+                      timeout=20)
+        finish_jobs(api, 60)
+        song = requests.get(f"{api}/api/library", timeout=10).json()[0]
+        s.check("a song as long as its limit is marked as cut off",
+                song.get("cut") is True,
+                f"seconds={song.get('seconds')} duration={song.get('duration')}")
 
         # -- the format asked for is the format kept ------------------------
         import shutil as _shutil
