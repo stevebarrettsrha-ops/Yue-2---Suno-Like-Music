@@ -299,6 +299,7 @@
   .tmeta .t span.n{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
   .vbadge{font-size:9.5px;letter-spacing:.09em;color:var(--dim);flex:none;
           font-family:ui-monospace,Menlo,Consolas,monospace}
+  .vbadge.cut{color:#e8b86a;cursor:help}
   .tmeta .s{font-size:11.5px;color:var(--dim);white-space:nowrap;overflow:hidden;
             text-overflow:ellipsis;margin-top:2px}
   .tacts{display:flex;gap:1px;margin-top:5px}
@@ -1186,6 +1187,15 @@ function visibleTracks(filterText) {
   else list.sort((a,b) => b.created - a.created);
   return list;
 }
+/* YuE2 stops a song at its Length whether or not the song has ended. A song
+   that ran into it plays like any other until the ending is missing, so say
+   so on the song, with what would let it finish. */
+function cutNote(t) {
+  const at = fmtTime(t.duration || t.seconds || 0);
+  return "This song reached its " + at + " length limit before it ended, so "
+    + "the ending is cut off. Make it again with a longer Length, or with "
+    + "shorter lyrics.";
+}
 function renderTracks() {
   const box = $("trackList"); box.innerHTML = "";
   const list = visibleTracks(S.filter);
@@ -1204,7 +1214,9 @@ function renderTracks() {
       '<span class="dur">' + fmtTime(t.seconds || t.duration || 0) + "</span>" +
       '<span class="play"><svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg></span></div>' +
       '<div class="tmeta"><div class="t"><span class="n">' + esc(t.title) + "</span>" +
-      '<span class="vbadge">' + versionBadge(t) + "</span></div>" +
+      '<span class="vbadge">' + versionBadge(t) + "</span>" +
+      (t.cut ? '<span class="vbadge cut" title="' + esc(cutNote(t)) + '">CUT</span>' : "") +
+      "</div>" +
       '<div class="s">' + esc(t.style || "") + "</div>" +
       '<div class="tacts">' +
       '<button class="iconbtn' + (S.likes[t.id] ? " liked" : "") +
@@ -1554,8 +1566,14 @@ async function pollJobs() {
     const jobs = await api("/api/jobs");
     const justDone = jobs.some((n) => n.status === "done" &&
       S.jobs.some((o) => o.id === n.id && o.status === "running"));
-    S.jobs = jobs; renderJobs();
-    if (justDone) { await loadLibrary(); toast("Song ready."); }
+    S.jobsBefore = S.jobs; S.jobs = jobs; renderJobs();
+    if (justDone) {
+      await loadLibrary();
+      const cut = jobs.find((n) => n.status === "done" && n.track && n.track.cut &&
+        S.jobsBefore.some((o) => o.id === n.id && o.status === "running"));
+      if (cut) toast("Song ready — but " + cutNote(cut.track).replace(/^This song/, "it"), true);
+      else toast("Song ready.");
+    }
     if (jobs.some((j) => j.status === "running")) jobTimer = setTimeout(pollJobs, 1500);
     else await loadLibrary();
   } catch (e) { jobTimer = setTimeout(pollJobs, 4000); }

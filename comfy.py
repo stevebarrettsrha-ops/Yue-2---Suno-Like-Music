@@ -619,7 +619,8 @@ class ComfyClient:
 
         return {"prompt": g, "seed": seed, "ckpt": ckpt,
                 "abc": bool(abc_link), "abc_node": abc_node,
-                "abc_text": abc_text, "decode": decode_class}
+                "abc_text": abc_text, "decode": decode_class,
+                "duration": duration}
 
     # ------------------------------------------------------------------ #
     # queue / results

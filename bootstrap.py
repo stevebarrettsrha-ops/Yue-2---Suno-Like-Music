@@ -453,6 +453,11 @@ def strip_ansi(text: str) -> str:
     return _ANSI.sub("", text)
 
 
+# ComfyUI's own warning when YuE2 writes to the end of max_duration without
+# reaching the end of the song (comfy/text_encoders/yue2.py).
+BUDGET_HIT = "semantic reached its token budget before the end token"
+
+
 class ComfyProcess:
     def __init__(self) -> None:
         self.proc: subprocess.Popen | None = None
@@ -467,6 +472,11 @@ class ComfyProcess:
         # call ready.
         self.serving = False
         self.started_at = 0.0
+        # When YuE2 last wrote a song to the end of its length without
+        # reaching the song's own end. Only the log says so, and a render
+        # that is cut off at the limit otherwise looks exactly like one that
+        # finished.
+        self.budget_hits: list[float] = []
         self._lock = threading.Lock()
 
     def note(self, msg: str) -> None:
@@ -499,7 +509,12 @@ class ComfyProcess:
             raise RuntimeError(
                 f"There is no ComfyUI at {comfy_dir} any more — the folder "
                 "has moved or been deleted. Run setup again from Settings.")
-        cmd = [python, "main.py", "--listen", "127.0.0.1", "--port", str(port),
+        # main.py by its full path: ComfyUI reports its argv in /system_stats,
+        # and that is how the Engine row says which install is answering. A
+        # bare "main.py" names no folder, so our own engine read as one that
+        # "does not say where it runs from".
+        main = os.path.abspath(comfy_dir / "main.py")
+        cmd = [python, main, "--listen", "127.0.0.1", "--port", str(port),
                "--disable-auto-launch"]
         # Whatever models folder was chosen is handed to ComfyUI here, so the
         # setting actually moves where songs are loaded from rather than only
@@ -544,6 +559,9 @@ class ComfyProcess:
                 if any(k in line for k in ("Starting server",
                                            "To see the GUI")):
                     self.serving = True
+                if BUDGET_HIT in line:
+                    with self._lock:
+                        self.budget_hits = self.budget_hits[-20:] + [time.time()]
                 if any(k in line for k in ("Error", "Traceback", "error:",
                                            "Starting server", "To see the GUI")):
                     prog.log(f"ComfyUI: {line}")
@@ -569,6 +587,15 @@ class ComfyProcess:
             self.note(f"ComfyUI stopped on its own, exit code {code}. "
                       "The reason is the last thing it printed above.")
         prog.log(f"ComfyUI exited with code {code}.")
+
+    def ran_out_since(self, since: float) -> bool:
+        """Did the song model hit its length limit after `since`?
+
+        ComfyUI renders one prompt at a time, so a hit after the moment a
+        song began running is that song's.
+        """
+        with self._lock:
+            return any(t >= since for t in self.budget_hits)
 
     def tail(self, n: int = 40) -> list[str]:
         with self._lock:

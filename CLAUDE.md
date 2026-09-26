@@ -272,6 +272,18 @@
     `vram_total` of 0 — an engine that lists no device — must both mean *say
     nothing*, never warn on a guess.
 
+33. **A song that ran into its Length says so.** YuE2 stops at
+    `max_duration` whether or not the song has ended, and the only word on it
+    is ComfyUI's log line "semantic reached its token budget before the end
+    token". `ran_out()` marks the track `cut` on either sign: that line, seen
+    by `ComfyProcess` after the song began running (one prompt renders at a
+    time, so a hit then is this song's), or a song as long as the limit it
+    was given. The song list badges it **CUT** and the finish toast says so,
+    because a cut song plays like any other until its ending is missing.
+    The managed engine is launched by `main.py`'s **full path**: ComfyUI
+    reports its argv in `/system_stats`, and a bare `main.py` names no folder,
+    so our own engine read as one that "does not say where it runs from".
+
 ## Validation gate — run after any edit
 
 ```bash
@@ -289,14 +301,14 @@ node --check /tmp/app.js
 A missing function declaration in the inline script kills all interactivity
 silently — `node --check` is not optional.
 
-`python tests/run.py` runs that gate and everything else (748 checks, about
+`python tests/run.py` runs that gate and everything else (742 checks, about
 five minutes); `python tests/run.py gate` is just the block above. Run the
 whole suite before pushing. Tests take their own port and their own
 `YUE_STUDIO_DATA` directory, so they never touch a real library. Four of them
 need `ffmpeg` on PATH and fail without it — that is the machine, not the code.
 The last 125 are the browser group and need Playwright (`pip install -r
 requirements-dev.txt && python -m playwright install chromium`); without it
-that group steps aside and the run stops at 623, which is a short count and
+that group steps aside and the run stops at 617, which is a short count and
 not a pass to compare against.
 
 `python tests/run.py engine` is the group that owns real ComfyUI processes:

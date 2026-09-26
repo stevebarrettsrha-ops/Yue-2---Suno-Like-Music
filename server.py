@@ -481,6 +481,22 @@ STALL_LIMIT = 1800.0
 NEVER_STARTED_LIMIT = 300.0
 
 
+def ran_out(built: dict, seconds: float | None, run_since: float) -> bool:
+    """Did this song stop at its length limit rather than at its own end?
+
+    Either sign is enough. ComfyUI logs a warning when YuE2 writes to the end
+    of max_duration without reaching the song's end token — the only word on
+    it, and only for an engine we started and can read. Failing that, a song
+    as long as the limit it was given is one that ran into it: the node
+    writes 25 frames a second and stops at max_duration * 25, so a cut song
+    comes out at the limit to within a frame or two of decoding.
+    """
+    if run_since and comfy_proc.ran_out_since(run_since):
+        return True
+    limit = built.get("duration") or 0
+    return bool(seconds and limit and seconds >= limit - 1.0)
+
+
 def run_job(job_id: str, params: dict, built: dict | None = None) -> None:
     def set_state(**kw):
         with jobs_lock:
@@ -709,6 +725,7 @@ def run_job(job_id: str, params: dict, built: dict | None = None) -> None:
             set_state(stage="Saving as wav", pct=96)
         kept = save_as(dest, track_id, wanted)
 
+        seconds = audio_duration(kept)
         track = {
             "id": track_id,
             "title": track_title(params),
@@ -720,7 +737,11 @@ def run_job(job_id: str, params: dict, built: dict | None = None) -> None:
             # back into the slider; seconds is how long the song actually came
             # out, and is what gets shown.
             "duration": params.get("duration"),
-            "seconds": audio_duration(kept),
+            "seconds": seconds,
+            # The song ran into its length limit before it ended, so its
+            # ending is missing. Worth saying: it plays like any other song
+            # and the cause (the Length, or long lyrics) is on this page.
+            "cut": ran_out(built, seconds, run_since),
             "mode": params.get("mode"),
             # Where the score came from: the planner, a transcription, a score
             # in the box (a chosen plan, an edit), or none at all.

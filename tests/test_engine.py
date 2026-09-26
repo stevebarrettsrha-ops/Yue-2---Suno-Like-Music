@@ -8,6 +8,7 @@ whether the app finds, names and stops the right operating-system process.
 
 from __future__ import annotations
 
+import os
 import sys
 import tempfile
 import time
@@ -208,9 +209,13 @@ def run(slow: bool = False) -> Suite:
             "out.write('loading \\u258d\\u258f \\u23f3 caf\\u00e9\\n'"
             ".encode('utf-8'))\n"
             "out.write('RuntimeError: CUDA out of memory\\n'.encode('utf-8'))\n"
+            "out.write(('launched as ' + sys.argv[0] + '\\n').encode('utf-8'))\n"
+            "out.write('[WARNING] YuE2 semantic reached its token budget "
+            "before the end token.\\n'.encode('utf-8'))\n"
             "out.flush()\n"
             "raise SystemExit(3)\n")
         proc = bootstrap.ComfyProcess()
+        launched = time.time()
         proc.start(sys.executable, ws, free_port(), bootstrap.Progress())
         for _ in range(100):
             if proc.exit_code is not None:
@@ -226,6 +231,17 @@ def run(slow: bool = False) -> Suite:
         s.check("the line naming the cause is still there",
                 any("CUDA out of memory" in ln for ln in console),
                 str(console)[:160])
+        # ComfyUI reports its argv in /system_stats, and the Engine row reads
+        # the install's folder out of it. A bare "main.py" names none, so our
+        # own engine read as one that "does not say where it runs from".
+        said = next((ln for ln in console if ln.startswith("launched as ")), "")
+        s.check("the engine is launched by main.py's full path",
+                os.path.isabs(said[len("launched as "):])
+                and said.endswith("main.py"), said)
+        s.check("a song that ran into its length limit is noticed",
+                proc.ran_out_since(launched))
+        s.check("and is not charged to a song that began after it",
+                not proc.ran_out_since(time.time() + 1))
         s.check("an engine that dies says so, with its exit code",
                 proc.exit_code == 3
                 and any("exit code 3" in ln for ln in console),
