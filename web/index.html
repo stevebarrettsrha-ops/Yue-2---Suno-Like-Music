@@ -95,6 +95,16 @@
         font-size:12px;color:var(--muted);white-space:nowrap}
   .chip:hover{border-color:var(--accent);color:#cdbcff}
   .chip.on{background:rgba(124,77,255,.16);border-color:rgba(124,77,255,.55);color:#cdbcff}
+  .chipfind{width:130px;padding:6px 12px;border-radius:999px;background:#18181d;
+            border:1px solid var(--line);font-size:12px;color:var(--text)}
+  .chipfind:focus{outline:none;border-color:var(--accent)}
+  .chipnone{font-size:12px;color:var(--dim)}
+  .genrefam{display:flex;flex-wrap:wrap;gap:4px;padding:0 15px 10px}
+  .genrefam button{padding:5px 11px;border-radius:999px;font-size:12px;color:var(--muted)}
+  .genrefam button:hover{color:var(--text)}
+  .genrefam button.on{background:#2e2e36;color:var(--text)}
+  .genrefam button i{font-style:normal;color:var(--accent);margin-left:5px;font-size:11px}
+  #cardGenres .note{padding:0 16px 10px;margin:0}
   .btn{padding:9px 16px;border-radius:10px;background:#232329;font-size:13px;font-weight:500}
   .btn:hover{background:#2c2c34}
   .btn.go{background:linear-gradient(100deg,var(--accent),var(--accent-2));color:#fff}
@@ -633,8 +643,22 @@
               <svg viewBox="0 0 24 24"><path d="m12 3 1.8 4.6L18 9l-4.2 1.4L12 15l-1.8-4.6L6 9l4.2-1.4z"/></svg></button>
             <button class="iconbtn" id="btnShuffleChips" title="Shuffle the tags">
               <svg viewBox="0 0 24 24"><path d="M3 7h4l10 10h4M3 17h4l3-3M18 4l3 3-3 3M18 14l3 3-3 3"/></svg></button>
+            <input type="search" id="chipFind" class="chipfind" placeholder="Find a genre…"
+              autocomplete="off" spellcheck="false" title="Find a tag among every genre" />
             <span id="styleChips" style="display:contents"></span>
           </div>
+        </details>
+
+        <details class="card" id="cardGenres">
+          <summary><svg class="chev" viewBox="0 0 24 24"><path d="m9 6 6 6-6 6"/></svg>Explore genres
+            <div class="tools">
+              <button class="iconbtn accent" id="btnGenreDice" title="Add a random genre from this family"><svg viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="3"/><circle cx="9" cy="9" r="1.2" fill="currentColor"/><circle cx="15" cy="15" r="1.2" fill="currentColor"/><circle cx="15" cy="9" r="1.2" fill="currentColor"/><circle cx="9" cy="15" r="1.2" fill="currentColor"/></svg></button>
+            </div></summary>
+          <div class="genrefam" id="genreFamilies"></div>
+          <p class="note" id="genreBlurb"></p>
+          <div class="chips" id="genreChips"></div>
+          <p class="note">Press a genre to add it to the style, press it again to take it
+            out. Two genres make a blend — “Bossa Nova, Trip Hop”.</p>
         </details>
 
         <details class="card" id="cardAbc">
@@ -1069,13 +1093,87 @@ function show(view) {
 }
 
 /* ========================= style chips ========================= */
-const ALL_TAGS = ["reggae","roots reggae","dancehall","afrobeats","gospel","soul",
+const BASE_TAGS = ["reggae","roots reggae","dancehall","afrobeats","gospel","soul",
   "R&B ballad","contemporary pop","hip hop","trap","lo-fi","jazz","blues","rock",
   "orchestral","synthwave","folk","country","house","drum and bass","ska","calypso",
   "warm female vocal","expressive male vocal","choir","spoken word","74 BPM","90 BPM",
   "120 BPM","acoustic guitar","Rhodes piano","upright bass","brushed drums",
   "horn section","steel drums","English","Patois","Spanish",
   "Hebrew"];
+/* Genres by family, for Explore genres and for the tag row. YuE2 reads the
+   style as words, so a genre is simply a tag in the style text. The first
+   sixteen tags above are what the row shows by default; genres join in
+   through Find, Shuffle and Show every tag. */
+const GENRE_FAMILIES = [
+  { name:"Pop", blurb:"Big hooks and clean production, from bubblegum to art pop.", genres:[
+    "Arabic Pop", "Art Pop", "Boy Band", "Cantopop", "City Pop", "Dance-Pop",
+    "Dream Pop", "Easy Listening", "Electropop", "Emo-Pop", "Hyperpop",
+    "Indie Pop", "J-Pop", "K-Pop", "Latin Pop", "Mandopop", "Synth-Pop"] },
+  { name:"Rock", blurb:"Guitars first \u2014 from the 1950s to the post-rock long form.", genres:[
+    "Alternative Rock", "Britpop", "Celtic Rock", "Christian Rock", "Country Rock",
+    "Funk Rock", "Garage Rock", "Grunge", "Hard Rock", "Heartland Rock",
+    "Indie Rock", "Jazz-Rock", "Math Rock", "New Wave", "Pop Rock", "Post-Punk",
+    "Post-Rock", "Progressive Rock", "Psychedelic Rock", "Rock & Roll",
+    "Rockabilly", "Shoegaze", "Soft Rock", "Surf Rock"] },
+  { name:"Punk & Emo", blurb:"Fast, loud, confessional.", genres:[
+    "Dance-Punk", "Emo", "Hardcore Punk", "Pop Punk", "Punk Rock", "Ska Punk"] },
+  { name:"Metal", blurb:"Distortion, weight and speed.", genres:[
+    "Black Metal", "Cyber Metal", "Death Metal", "Doom Metal", "Glam Metal",
+    "Industrial Metal", "Metal", "Nu Metal", "Power Metal", "Rap Metal",
+    "Thrash Metal"] },
+  { name:"Hip Hop", blurb:"Rhymes over beats, from boom bap to drill.", genres:[
+    "Afro Trap", "Boom Bap", "Cloud Rap", "Conscious Hip Hop", "Drill", "Emo Rap",
+    "G-Funk", "Grime", "Industrial Hip Hop", "Lo-Fi Hip Hop", "Phonk"] },
+  { name:"R&B & Soul", blurb:"Voice-led grooves, church roots to late-night slow jams.", genres:[
+    "Alternative R&B", "Barbershop", "Contemporary R&B", "Doo-Wop", "Motown",
+    "Neo-Soul", "New Jack Swing", "Northern Soul", "Philly Soul", "Quiet Storm",
+    "R&B", "Soul", "Southern Soul", "Trap Soul"] },
+  { name:"Funk & Disco", blurb:"Syncopated bass and four-on-the-floor.", genres:[
+    "Disco", "Electro Swing", "Eurobeat", "Eurodance", "Funk", "Hi-NRG",
+    "Italo-Disco", "Jazz-Funk", "Nu-Disco"] },
+  { name:"Electronic", blurb:"Synths and drum machines, dance floor to headphones.", genres:[
+    "Afro House", "Alternative Dance", "Big Room", "Breakbeat", "Chiptune",
+    "Deep House", "Dubstep", "Electronic Dance Music", "Folktronica", "Footwork",
+    "Future Bass", "Hardstyle", "IDM", "Jersey Club", "Jungle",
+    "Liquid Drum and Bass", "Minimal Techno", "Moombahton", "Neurofunk",
+    "Progressive House", "Psytrance", "Tech House", "Techno", "Trance",
+    "Tropical House", "UK Garage", "Vaporwave"] },
+  { name:"Chill & Ambient", blurb:"Slow, spacious and textural.", genres:[
+    "Ambient", "Chillout", "Chillwave", "Dark Ambient", "Downtempo", "Lounge",
+    "New Age", "Trip Hop"] },
+  { name:"Jazz", blurb:"Swing, improvisation and extended chords.", genres:[
+    "Acid Jazz", "Afro-Jazz", "Bebop", "Big Band", "Cool Jazz", "Dixieland",
+    "Ethio-Jazz", "Free Jazz", "Gypsy Jazz", "Hard Bop", "Latin Jazz",
+    "Smooth Jazz", "Swing"] },
+  { name:"Blues", blurb:"Twelve bars and bent notes.", genres:[
+    "Boogie Woogie", "Chicago Blues", "Delta Blues", "Jump Blues", "Soul Blues",
+    "Texas Blues"] },
+  { name:"Country & Folk", blurb:"Story songs, twang and acoustic strings.", genres:[
+    "Americana", "Bluegrass", "Cajun", "Country Gospel", "Country Pop",
+    "Honky Tonk", "Indie Folk", "Outlaw Country", "Sea Shanty", "Western Swing",
+    "Zydeco"] },
+  { name:"Latin", blurb:"Clave, dembow and Latin percussion.", genres:[
+    "Bachata", "Banda", "Bolero", "Bossa Nova", "Corridos", "Cumbia", "Dembow",
+    "Mambo", "Mariachi", "Merengue", "Norteño", "Reggaetón", "Salsa", "Samba",
+    "Son Cubano", "Tango", "Tejano"] },
+  { name:"Caribbean & African", blurb:"Offbeats, log drums and highlife guitar.", genres:[
+    "Afrobeat", "Amapiano", "Baile Funk", "Dub", "Funk Carioca", "Gqom",
+    "Highlife", "Kizomba", "Kwaito", "Lovers Rock", "Reggae Fusion", "Soca",
+    "Zouk"] },
+  { name:"World", blurb:"Traditions from everywhere else.", genres:[
+    "Bhangra", "Bollywood", "Chanson", "Enka", "Fado", "Flamenco", "Klezmer",
+    "Polka", "Qawwali", "Schlager"] },
+  { name:"Faith", blurb:"Gospel, hymns and worship.", genres:[
+    "Contemporary Christian", "Gregorian Chant", "Worship"] },
+  { name:"Classical & Stage", blurb:"Orchestras, opera and the theatre.", genres:[
+    "Baroque", "Classical Music", "Film Score", "Musical Theatre", "Opera"] },
+  { name:"Fun & Kids", blurb:"Songs for laughing and for bedtime.", genres:[
+    "Children's Music", "Comedy", "Lullaby"] }
+];
+const GENRES = GENRE_FAMILIES.reduce((all, f) => all.concat(f.genres), [])
+  .sort((a, b) => a.toLowerCase().localeCompare(b.toLowerCase()));
+const ALL_TAGS = BASE_TAGS.concat(GENRES.filter((g) =>
+  !BASE_TAGS.some((t) => t.toLowerCase() === g.toLowerCase())));
 let chipPool = ALL_TAGS.slice(0, 16);
 function buildChips() {
   const box = $("styleChips"); box.innerHTML = "";
@@ -1094,10 +1192,66 @@ function toggleTag(c) {
   if (i >= 0) parts.splice(i,1); else parts.push(c);
   ta.value = parts.join(", "); syncChips(); saveDraft();
 }
+function styleParts() {
+  return $("style").value.split(",").map((x) => x.trim().toLowerCase()).filter(Boolean);
+}
+/* A chip is on when its tag is one of the style's comma-separated parts —
+   not merely inside one, or "Metal" would light up for "Glam Metal". */
 function syncChips() {
-  const have = $("style").value.toLowerCase();
-  document.querySelectorAll("#styleChips .chip").forEach((b) =>
-    b.classList.toggle("on", have.includes(b.textContent.toLowerCase())));
+  const have = styleParts();
+  document.querySelectorAll("#styleChips .chip, #genreChips .chip").forEach((b) =>
+    b.classList.toggle("on", have.indexOf(b.textContent.toLowerCase()) >= 0));
+  genreFamilies();
+}
+/* ========================= explore genres ========================= */
+let genreFam = store("yue.genreFamily") || GENRE_FAMILIES[0].name;
+function currentFamily() {
+  return GENRE_FAMILIES.find((f) => f.name === genreFam) || GENRE_FAMILIES[0];
+}
+/* The family buttons carry how many of their genres the style already has,
+   so a blend across families can be seen at a glance. */
+function genreFamilies() {
+  const box = $("genreFamilies"); if (!box) return;
+  const have = styleParts();
+  box.innerHTML = "";
+  GENRE_FAMILIES.forEach((f) => {
+    const b = document.createElement("button");
+    b.type = "button"; b.className = f.name === currentFamily().name ? "on" : "";
+    const used = f.genres.filter((g) => have.indexOf(g.toLowerCase()) >= 0).length;
+    b.innerHTML = esc(f.name) + (used ? "<i>" + used + "</i>" : "");
+    b.title = f.genres.length + " genres";
+    b.addEventListener("click", () => { genreFam = f.name; store("yue.genreFamily", f.name);
+      buildGenres(); });
+    box.appendChild(b);
+  });
+}
+function buildGenres() {
+  const f = currentFamily();
+  $("genreBlurb").textContent = f.blurb;
+  const box = $("genreChips"); box.innerHTML = "";
+  f.genres.forEach((g) => {
+    const b = document.createElement("button");
+    b.className = "chip"; b.type = "button"; b.textContent = g;
+    b.addEventListener("click", () => toggleTag(g));
+    box.appendChild(b);
+  });
+  syncChips();
+}
+function randomGenre() {
+  const have = styleParts();
+  const left = currentFamily().genres.filter((g) => have.indexOf(g.toLowerCase()) < 0);
+  if (!left.length) { toast("Every " + currentFamily().name + " genre is already in the style."); return; }
+  const g = left[Math.floor(Math.random() * left.length)];
+  toggleTag(g); toast("Added “" + g + "” to the style.");
+}
+/* Typing in Find shows every tag that contains it, from the whole list. */
+function findChips() {
+  const q = $("chipFind").value.trim().toLowerCase();
+  if (!q) { chipPool = ALL_TAGS.slice(0, 16); buildChips(); return; }
+  chipPool = ALL_TAGS.filter((t) => t.toLowerCase().indexOf(q) >= 0);
+  buildChips();
+  if (!chipPool.length) $("styleChips").innerHTML =
+    '<span class="chipnone">No tag has “' + esc(q) + '” in it — type it into the style instead.</span>';
 }
 
 /* ========================= draft + options ========================= */
@@ -2296,11 +2450,15 @@ function wire() {
   $("style").addEventListener("input", () => { syncChips(); saveDraft(); });
   $("songTitle").addEventListener("input", saveDraft);
   $("btnChipList").addEventListener("click", () => {
+    $("chipFind").value = "";
     chipPool = chipPool.length === ALL_TAGS.length ? ALL_TAGS.slice(0,16) : ALL_TAGS;
     buildChips(); });
   $("btnShuffleChips").addEventListener("click", () => {
+    $("chipFind").value = "";
     chipPool = ALL_TAGS.slice().sort(() => Math.random() - .5).slice(0,16);
     buildChips(); });
+  $("chipFind").addEventListener("input", findChips);
+  $("btnGenreDice").addEventListener("click", (ev) => { ev.preventDefault(); randomGenre(); });
   $("btnRandomStyle").addEventListener("click", () => {
     $("style").value = randomStyle(); syncChips(); saveDraft(); });
   $("btnAudio").addEventListener("click", () => openAddPanel("audio"));
@@ -3072,6 +3230,7 @@ function clearAll() {
 
 /* ========================= boot ========================= */
 buildChips();
+buildGenres();
 fillDurations(900);
 loadDraft();
 syncChips();

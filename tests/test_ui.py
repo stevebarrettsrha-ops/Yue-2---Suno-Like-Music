@@ -178,6 +178,47 @@ def run(slow: bool = False) -> Suite:
             s.check("clicking it again takes the tag away",
                     page.input_value("#style") == before)
 
+            # -- genres: Find reaches the whole list, Explore by family -------
+            page.fill("#chipFind", "metal")
+            found = page.locator("#styleChips .chip").all_inner_texts()
+            s.check("Find shows every tag with the word in it, from all genres",
+                    len(found) >= 8 and all("metal" in t.lower() for t in found)
+                    and "Glam Metal" in found, str(found[:5]))
+            page.fill("#chipFind", "")
+            s.equal("and clearing it brings the usual row back",
+                    page.locator("#styleChips .chip").count(), 16)
+
+            page.click("#cardGenres summary")
+            page.click("#genreFamilies button:has-text('Jazz')")
+            s.check("a family shows its own genres",
+                    "Cool Jazz" in page.locator("#genreChips .chip")
+                    .all_inner_texts())
+            page.click("#genreChips .chip:text-is('Cool Jazz')")
+            s.check("pressing a genre adds it to the style",
+                    "Cool Jazz" in page.input_value("#style"))
+            s.check("and its family counts it",
+                    page.locator("#genreFamilies button.on i").inner_text() == "1")
+            page.click("#genreFamilies button:has-text('Metal')")
+            page.click("#genreChips .chip:text-is('Glam Metal')")
+            s.check("a genre is only lit when it is in the style itself",
+                    page.locator("#genreChips .chip.on").all_inner_texts()
+                    == ["Glam Metal"],
+                    str(page.locator("#genreChips .chip.on").all_inner_texts()))
+            page.click("#genreChips .chip:text-is('Glam Metal')")
+            page.click("#genreFamilies button:has-text('Jazz')")
+            page.click("#genreChips .chip:text-is('Cool Jazz')")
+            s.check("and pressing them again takes them out",
+                    page.input_value("#style") == before,
+                    page.input_value("#style"))
+            page.click("#btnGenreDice")
+            s.check("the dice adds a genre from the family on show",
+                    any(g in page.input_value("#style") for g in
+                        page.locator("#genreChips .chip.on").all_inner_texts())
+                    and page.locator("#genreChips .chip.on").count() == 1)
+            page.fill("#style", before)
+            page.dispatch_event("#style", "input")
+            page.click("#cardGenres summary")
+
             page.click("#cardMore summary")
             lengths = page.locator("#duration option").all_inner_texts()
             s.check("Length is offered as real song lengths",

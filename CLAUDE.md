@@ -301,12 +301,12 @@ node --check /tmp/app.js
 A missing function declaration in the inline script kills all interactivity
 silently — `node --check` is not optional.
 
-`python tests/run.py` runs that gate and everything else (742 checks, about
+`python tests/run.py` runs that gate and everything else (750 checks, about
 five minutes); `python tests/run.py gate` is just the block above. Run the
 whole suite before pushing. Tests take their own port and their own
 `YUE_STUDIO_DATA` directory, so they never touch a real library. Four of them
 need `ffmpeg` on PATH and fail without it — that is the machine, not the code.
-The last 125 are the browser group and need Playwright (`pip install -r
+The last 133 are the browser group and need Playwright (`pip install -r
 requirements-dev.txt && python -m playwright install chromium`); without it
 that group steps aside and the run stops at 617, which is a short count and
 not a pass to compare against.
@@ -323,7 +323,11 @@ sliders. Detail → KSampler steps. Lyric focus → `top_p`. Repetition →
 `repetition_penalty`. Melody plan → the `mode` input, with Off dropping the
 `YuE2GenerateABC` node. Vocal male/female appends to the style text, because the
 model takes vocal type as words, not as a parameter — do not invent a node input
-for it. There is deliberately **no** negative-prompt control: the reference
+for it. Genres (the tag row, its Find box and **Explore genres**) are words in the
+style text too, one comma-separated part each; a chip is lit only when its tag
+is a whole part, so "Metal" stays dark for "Glam Metal". `GENRE_FAMILIES` is
+the one list — `GENRES` is derived from it. There is deliberately **no**
+negative-prompt control: the reference
 workflow wires KSampler's negative to the same conditioning as positive, so an
 "exclude styles" box would do nothing.
 
