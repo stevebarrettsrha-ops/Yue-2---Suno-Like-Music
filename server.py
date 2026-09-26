@@ -814,6 +814,15 @@ def api_status():
             payload["samplers"], payload["schedulers"] = client.samplers()
             payload["formats"] = available_formats(client.save_formats())
             payload["max_duration"] = client.duration_limit()
+            # What the card holds, and what each checkpoint weighs, so the
+            # model picker can say which ones do not fit. A model larger than
+            # the card still renders — ComfyUI swaps it in and out — but it
+            # crawls, and nothing on the page said so: the only symptom was a
+            # song that used to take half an hour taking most of a day.
+            payload["vram_total"] = client.vram_total()
+            payload["checkpoint_sizes"] = {
+                name: checkpoint_size(name)
+                for name in payload.get("checkpoints") or []}
             # What Auto asks for. Distinct from the hard ceiling: sending the
             # engine's absolute 15-minute limit for every Auto song makes it
             # allocate for a quarter-hour up front, which is where the native

@@ -262,7 +262,15 @@ class H(BaseHTTPRequestHandler):
             if not os.environ.get("MOCK_NO_ARGV"):
                 root = os.environ.get("MOCK_COMFY_ROOT", "/opt/ComfyUI")
                 system["argv"] = [f"{root}/main.py"]
-            self._send(200, {"system": system})
+            body = {"system": system}
+            # A card, when the test wants one. Real ComfyUI always lists its
+            # devices here; vram_total is what says whether a checkpoint can
+            # stay resident while a song renders.
+            vram = os.environ.get("MOCK_VRAM")
+            if vram:
+                body["devices"] = [{"name": "cuda:0 Pretend", "type": "cuda",
+                                    "index": 0, "vram_total": int(vram)}]
+            self._send(200, body)
         elif p.startswith("/history/"):
             pid = p.rsplit("/", 1)[-1]
             with LOCK:
