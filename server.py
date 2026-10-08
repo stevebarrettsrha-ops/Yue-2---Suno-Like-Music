@@ -52,6 +52,59 @@ app.config["MAX_CONTENT_LENGTH"] = MAX_REF_BYTES + 1024 * 1024
 
 cfg = load_config()
 progress = Progress()
+
+# Set while a search walks the drives for ComfyUI, so the Engine page says
+# "searching" instead of "missing" and Recheck does not start a second walk.
+locating = threading.Event()
+_locate_lock = threading.Lock()
+
+
+def _say(msg: str) -> None:
+    progress.log(msg)               # the setup log, and the console with it
+
+
+def _search_off() -> bool:
+    """YUE_STUDIO_NO_SEARCH=1: the tests' configs point at made-up folders on
+    purpose, and must neither be repaired nor adopt a real install."""
+    return os.environ.get("YUE_STUDIO_NO_SEARCH") == "1"
+
+
+def _heal(search: bool = False) -> None:
+    """Verify the saved locations; repair any that moved.
+
+    Without `search` only the quick repair runs (a moved or renamed app
+    folder) and never waits on a search in progress. With it, a ComfyUI that
+    is still nowhere is searched for across the drives; searches take turns.
+    """
+    if _search_off():
+        locating.clear()            # never leave a caller's "searching" set
+        return
+    if not _locate_lock.acquire(blocking=search):
+        return                      # a search is running; it will report
+    try:
+        if search:
+            locating.set()
+        notes = bootstrap.verify_locations(cfg, search=search, log=_say)
+        if notes:
+            save_config(cfg)
+            for n in notes:
+                _say(n)
+        if search:
+            for line in bootstrap.location_report(cfg):
+                _say("Verified " + line)
+    except Exception as exc:  # noqa: BLE001 — a failed check must not stop boot
+        _say(f"Could not verify saved locations: {exc}")
+    finally:
+        if search:
+            locating.clear()
+        _locate_lock.release()
+
+
+def _needs_search() -> bool:
+    return bootstrap.comfy_lost(cfg)
+
+
+_heal()
 comfy_proc = ComfyProcess()
 client = ComfyClient(cfg["comfy_url"])
 
@@ -1600,8 +1653,18 @@ def api_deps():
     listed = client.checkpoints() if online else None
     engine_root = client.engine_root() if online else ""
     fresh = request.args.get("fresh") == "1"
+    if not locating.is_set() and not _search_off():
+        _heal()
+        if _needs_search():
+            # Recheck with ComfyUI still nowhere: search the drives in the
+            # background — the row says "searching" and the page polls.
+            locating.set()
+            threading.Thread(target=_heal, args=(True,), daemon=True).start()
+    searching = locating.is_set()
     return jsonify({"items": manager.dependencies(cfg, listed, engine_root,
-                                                  fresh, engine_note()),
+                                                  fresh, engine_note(),
+                                                  searching=searching),
+                    "searching": searching,
                     "os": __import__("platform").system(),
                     "torch_index": cfg.get("torch_index", "")})
 
@@ -2088,12 +2151,19 @@ def ensure_engine_at_boot() -> None:
         _note(str(exc))
 
 
+def boot() -> None:
+    """Verify every saved location — searching the drives if ComfyUI is
+    lost — then bring the engine up."""
+    _heal(search=True)
+    ensure_engine_at_boot()
+
+
 def main() -> None:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     TRACKS_DIR.mkdir(parents=True, exist_ok=True)
     threading.Thread(target=ws_listener, daemon=True).start()
     # The engine comes up on its own; the page can open while it does.
-    threading.Thread(target=ensure_engine_at_boot, daemon=True).start()
+    threading.Thread(target=boot, daemon=True).start()
 
     url = f"http://127.0.0.1:{PORT}"
     print(f"\n  YuE Studio  →  {url}\n")

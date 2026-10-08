@@ -284,6 +284,23 @@
     reports its argv in `/system_stats`, and a bare `main.py` names no folder,
     so our own engine read as one that "does not say where it runs from".
 
+## Saved locations are verified, never trusted
+
+The config keeps absolute paths (`comfy_dir`, `models_dir`, `python`), which
+go stale the moment the app folder is moved, renamed or re-extracted — and
+then the Engine page reads "missing" though it is all on disk.
+`bootstrap.verify_locations()` runs at every start (`server.boot()`, before
+the engine is launched) and on every Recheck (`/api/deps`): `heal_paths()`
+rebases a stale path onto the app's current folder — each tail of the saved
+path is tried under `APP_DIR`, longest first, because the app's own folder
+name may be the part that changed — and if ComfyUI is still nowhere,
+`find_comfy_installs()` walks the drives breadth-first under a time budget
+and `pick_comfy()` prefers the install holding the YuE2 weights. While it
+walks, `/api/deps` reports `searching` and the page re-polls. External mode
+(not managed, no folder saved) has no folder to lose and adopts nothing.
+`YUE_STUDIO_NO_SEARCH=1` (set by the test harness) turns it all off: test
+configs name made-up folders on purpose.
+
 ## Validation gate — run after any edit
 
 ```bash
@@ -301,14 +318,14 @@ node --check /tmp/app.js
 A missing function declaration in the inline script kills all interactivity
 silently — `node --check` is not optional.
 
-`python tests/run.py` runs that gate and everything else (750 checks, about
+`python tests/run.py` runs that gate and everything else (783 checks, about
 five minutes); `python tests/run.py gate` is just the block above. Run the
 whole suite before pushing. Tests take their own port and their own
 `YUE_STUDIO_DATA` directory, so they never touch a real library. Four of them
 need `ffmpeg` on PATH and fail without it — that is the machine, not the code.
 The last 133 are the browser group and need Playwright (`pip install -r
 requirements-dev.txt && python -m playwright install chromium`); without it
-that group steps aside and the run stops at 617, which is a short count and
+that group steps aside and the run stops at 650, which is a short count and
 not a pass to compare against.
 
 `python tests/run.py engine` is the group that owns real ComfyUI processes:

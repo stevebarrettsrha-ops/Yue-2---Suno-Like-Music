@@ -249,7 +249,7 @@ def same_install(comfy_dir: str, engine_root: str) -> bool:
 
 def dependencies(cfg: dict, listed: list[str] | None = None,
                  engine_root: str = "", fresh: bool = False,
-                 engine_note: str = "") -> list[dict]:
+                 engine_note: str = "", searching: bool = False) -> list[dict]:
     """What the machine has. `listed` is the checkpoints ComfyUI itself reports,
     or None when it could not be asked — it is the only way this report can tell
     "the file is missing" apart from "the engine cannot see the file"."""
@@ -282,9 +282,15 @@ def dependencies(cfg: dict, listed: list[str] | None = None,
     if comfy_dir and (comfy_dir / "main.py").exists():
         items.append({"id": "comfyui", "label": "ComfyUI", "state": "ok",
                       "detail": str(comfy_dir), "action": "update"})
+    elif searching:
+        items.append({"id": "comfyui", "label": "ComfyUI", "state": "warn",
+                      "detail": "Searching this computer for it — this "
+                                "list updates when the search is done.",
+                      "action": None})
     else:
         items.append({"id": "comfyui", "label": "ComfyUI", "state": "missing",
-                      "detail": "Not installed yet.", "action": "install"})
+                      "detail": "Not found on this computer.",
+                      "action": "install"})
 
     # PyTorch. A ComfyUI we did not install brings its own environment, and
     # that environment is not ours to change — report what we find and leave
