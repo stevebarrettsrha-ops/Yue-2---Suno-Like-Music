@@ -279,6 +279,7 @@ def studio(comfy_url: str, data: Path, **config) -> Server:
     port = free_port()
     return Server([sys.executable, "server.py"], port, "/api/status",
                   env={"YUE_STUDIO_PORT": str(port), "YUE_STUDIO_NO_BROWSER": "1",
+                       "YUE_STUDIO_NO_SEARCH": "1",
                        "YUE_STUDIO_DATA": str(data)})
 
 

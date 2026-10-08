@@ -296,8 +296,11 @@ def have_git() -> bool:
 def detect_comfy_dirs() -> list[str]:
     """Common locations for an existing ComfyUI install, portable or Desktop."""
     home = Path.home()
-    cands = [
-        APP_DIR / "ComfyUI",
+    # Beside the app first: setup puts ComfyUI in here, and a portable build
+    # unpacked next to the app's folder is the other common layout.
+    near = [APP_DIR, APP_DIR.parent, APP_DIR.parent.parent]
+    cands = [b / "ComfyUI" for b in near] + \
+        [b / "ComfyUI_windows_portable" / "ComfyUI" for b in near] + [
         home / "ComfyUI",
         home / "Documents" / "ComfyUI",
         home / "Desktop" / "ComfyUI",
@@ -331,6 +334,235 @@ def detect_comfy_dirs() -> list[str]:
             out.append(f)
     return out
 
+
+
+# --------------------------------------------------------------------------- #
+# saved locations: verified at every start, never trusted
+# --------------------------------------------------------------------------- #
+def rebase_path(old: str) -> Path | None:
+    """Where a path saved under an earlier location of this app lives now.
+
+    The config keeps absolute paths. Move, rename or re-extract the folder
+    (yue-2---suno-like-music -> Yue-2---Suno-Like-Music-main, C: -> D:) and
+    every one of them points nowhere, though ComfyUI and the weights moved
+    with it. The app's own folder may be the part that was renamed, so its
+    old name cannot be searched for: each tail of the saved path is grafted
+    onto the app's folder instead, longest first, and the first that exists
+    wins.
+    """
+    parts = [p for p in re.split(r"[\\/]+", old or "") if p]
+    for i in range(len(parts)):
+        tail = parts[i:]
+        if any(p.endswith(":") or p in (".", "..") for p in tail):
+            continue                # a drive, or a step out of the app
+        cand = APP_DIR.joinpath(*tail)
+        try:
+            if cand.exists():
+                return cand
+        except OSError:
+            continue
+    return None
+
+
+def comfy_lost(cfg: dict) -> bool:
+    """True when the ComfyUI folder this setup needs is not where it says.
+
+    External mode (not managed, no folder saved) runs a ComfyUI the person
+    starts themselves, reached by address alone: there is no folder to lose,
+    and adopting one found on disk would have boot start it behind their back.
+    """
+    d = cfg.get("comfy_dir") or ""
+    if not d:
+        return bool(cfg.get("managed", True))
+    try:
+        return not (Path(d) / "main.py").exists()
+    except OSError:
+        return True
+
+
+def heal_paths(cfg: dict) -> list[str]:
+    """Repair saved paths that no longer exist. Returns what changed."""
+    notes: list[str] = []
+    old_comfy = cfg.get("comfy_dir") or ""
+    comfy = Path(old_comfy) if old_comfy else None
+    if not comfy_lost(cfg):
+        comfy = comfy if comfy and (comfy / "main.py").exists() else None
+    else:
+        comfy = None
+        cands = [rebase_path(old_comfy)] + [Path(d) for d in detect_comfy_dirs()]
+        for c in cands:
+            if c and (c / "main.py").exists():
+                cfg["comfy_dir"] = str(c)
+                comfy = c
+                notes.append(f"ComfyUI found at {c}")
+                break
+    old_models = cfg.get("models_dir") or ""
+    if not (old_models and Path(old_models).is_dir()):
+        moved = rebase_path(old_models)
+        if moved and moved.is_dir():
+            cfg["models_dir"] = str(moved)
+        elif comfy and (comfy / "models").is_dir():
+            cfg["models_dir"] = str(comfy / "models")
+        if cfg.get("models_dir") != old_models:
+            notes.append(f"Models folder found at {cfg['models_dir']}")
+    py = cfg.get("python") or ""
+    if py and not Path(py).exists():
+        moved = rebase_path(py)
+        cfg["python"] = str(moved) if moved else ""
+        notes.append(f"Python path {py} is gone"
+                     + (f"; using {moved}" if moved else "; cleared"))
+    return notes
+
+
+# Folders never worth walking into when hunting for ComfyUI: system trees,
+# package caches, and the inside of a ComfyUI (its models alone can hold
+# thousands of entries).
+_SKIP_DIRS = {"windows", "program files", "program files (x86)", "programdata",
+              "$recycle.bin", "system volume information", "recovery",
+              "node_modules", ".git", "__pycache__", "site-packages", "lib",
+              "libs", "scripts", ".cache", ".venv", "venv", "comfy-venv",
+              "python_embeded", "models", "custom_nodes", "output", "input",
+              "temp", "proc", "sys", "dev", "snap"}
+
+
+def is_comfy_dir(path: Path) -> bool:
+    try:
+        return (path / "main.py").is_file() and \
+            (path / "folder_paths.py").is_file()
+    except OSError:
+        return False
+
+
+def search_roots() -> list[Path]:
+    """Where a full search starts: around the app, home, then every drive."""
+    roots = [APP_DIR.parent.parent, Path.home()]
+    if platform.system() == "Windows":
+        roots += [Path(f"{c}:/") for c in "CDEFGHIJKLMNOPQRSTUVWXYZ"
+                  if os.path.exists(f"{c}:/")]
+    else:
+        roots += [Path("/opt"), Path("/srv"), Path("/mnt"), Path("/media")]
+    return roots
+
+
+def find_comfy_installs(roots: list[Path] | None = None, max_depth: int = 6,
+                        budget: float = 45.0) -> list[Path]:
+    """Every ComfyUI under `roots`, shallowest first, within a time budget.
+
+    Breadth-first, so the install a person put somewhere sensible is met
+    long before the walk wanders into deep trees, and a slow or huge drive
+    ends the search on time rather than holding up the engine.
+    """
+    deadline = time.monotonic() + budget
+    found: list[Path] = []
+    seen: set[str] = set()
+    queue = [(r, 0) for r in (roots if roots is not None else search_roots())]
+    head = 0
+    while head < len(queue) and time.monotonic() < deadline:
+        path, depth = queue[head]
+        head += 1
+        try:
+            key = os.path.normcase(str(path.resolve()))
+        except OSError:
+            continue
+        if key in seen:
+            continue
+        seen.add(key)
+        if is_comfy_dir(path):
+            found.append(path)
+            continue                # nothing worth finding inside one
+        if depth >= max_depth:
+            continue
+        try:
+            with os.scandir(path) as it:
+                for e in it:
+                    if time.monotonic() >= deadline:
+                        break
+                    try:
+                        if not e.is_dir(follow_symlinks=False):
+                            continue
+                    except OSError:
+                        continue
+                    if e.name.lower() in _SKIP_DIRS or e.name.startswith("."):
+                        continue
+                    queue.append((Path(e.path), depth + 1))
+        except OSError:
+            continue
+    return found
+
+
+def _has_required_weights(models_dir: Path) -> bool:
+    try:
+        return models_dir.is_dir() and not any(
+            model_incomplete(models_dir / m[0], m[2]) for m in MODELS if m[3])
+    except OSError:
+        return False
+
+
+def pick_comfy(installs: list[Path], cfg: dict) -> Path | None:
+    """The install to use: the one holding the YuE2 weights a song needs,
+    then the one inside this app, then the first found."""
+    def score(c: Path) -> tuple:
+        try:
+            inside = c.resolve().is_relative_to(APP_DIR.resolve())
+        except (OSError, ValueError):
+            inside = False
+        return (not _has_required_weights(c / "models"), not inside)
+    return min(installs, key=score) if installs else None
+
+
+def verify_locations(cfg: dict, search: bool = True,
+                     log=None) -> list[str]:
+    """Check every saved location; repair what moved. Returns what changed.
+
+    The quick repair (heal_paths) handles a moved or renamed app folder. When
+    ComfyUI is still nowhere, and `search` is on, the drives are searched.
+    """
+    say = log or (lambda _m: None)
+    notes = heal_paths(cfg)
+    comfy = Path(cfg["comfy_dir"]) if cfg.get("comfy_dir") else None
+    if not search or not (comfy or cfg.get("managed", True)):
+        return notes                # quick check only, or external mode
+    if comfy_lost(cfg):
+        say("Searching this computer for ComfyUI…")
+        comfy = pick_comfy(find_comfy_installs(), cfg)
+        if not comfy:
+            say("No ComfyUI found on this computer — install it from the "
+                "Engine page, or set its folder in Settings.")
+            return notes
+        cfg["comfy_dir"] = str(comfy)
+        notes.append(f"ComfyUI found at {comfy}")
+        models = cfg.get("models_dir") or ""
+        if not (models and Path(models).is_dir()) and \
+                (comfy / "models").is_dir():
+            cfg["models_dir"] = str(comfy / "models")
+            notes.append(f"Models folder found at {cfg['models_dir']}")
+    if cfg.get("setup_complete") and not cfg.get("python"):
+        # A finished setup whose interpreter went with the old folder: the
+        # install's own, found by running it (rule 4). Only on the slow path —
+        # it starts processes, and the quick check must stay quick.
+        own = existing_python(comfy)
+        if own:
+            cfg["python"] = own
+            notes.append(f"Python found at {own}")
+    return notes
+
+
+def location_report(cfg: dict) -> list[str]:
+    """One line per saved location, saying whether it checks out."""
+    out = []
+    comfy = cfg.get("comfy_dir") or ""
+    out.append(f"ComfyUI: {comfy} — ok"
+               if comfy and Path(comfy, "main.py").exists()
+               else "ComfyUI: not found")
+    models = cfg.get("models_dir") or ""
+    if models and Path(models).is_dir():
+        gone = missing_models(Path(models), cfg)
+        out.append(f"Models: {models} — "
+                   + ("all YuE2 weights present" if not gone else
+                      f"{len(gone)} YuE2 file(s) missing"))
+    else:
+        out.append("Models: not found")
+    return out
 
 def venv_python(comfy_dir: Path) -> Path:
     venv = comfy_dir.parent / "comfy-venv"

@@ -12,6 +12,7 @@ Playwright, and say so and step aside when it is missing.
 from __future__ import annotations
 
 import importlib
+import os
 import re
 import subprocess
 import sys
@@ -21,6 +22,9 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent
 sys.path.insert(0, str(HERE))
+# Some groups import server.py in-process; its start-up check of the saved
+# locations must not repair or search on the developer's real config.
+os.environ["YUE_STUDIO_NO_SEARCH"] = "1"
 
 # Ordered cheapest first, so a plain mistake shows up before the slow ones.
 MODULES = [

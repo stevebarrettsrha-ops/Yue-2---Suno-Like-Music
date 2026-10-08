@@ -15,8 +15,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import bootstrap                                   # noqa: E402
 import manager                                     # noqa: E402
-from harness import (Suite, Workspace, free_port,  # noqa: E402
-                     safetensors_stub)
+from harness import (Suite, Workspace, fake_weights,  # noqa: E402
+                     free_port, safetensors_stub)
 
 # A stand-in interpreter: answers the probes find_python and existing_python run.
 STUB = """#!/bin/sh
@@ -590,6 +590,110 @@ def run(slow: bool = False) -> Suite:
              ("checkpoints/a.safetensors", "audio_encoders/e.safetensors",
               "some/vae/x.safetensors", "my_lora.safetensors", "sheetsage2.bin")]
             == ["checkpoints", "audio_encoders", "vae", "loras", "audio_encoders"])
+
+    # -- a moved or renamed app folder: stale saved paths are found again ----
+    import tempfile
+    real_app = bootstrap.APP_DIR
+    with tempfile.TemporaryDirectory() as tmp:
+        # moved: same folder name somewhere else; renamed: the app's own
+        # folder is the part that changed, so its old name is no guide
+        for label, old_name, new_name in [
+                ("moved", real_app.name, real_app.name),
+                ("renamed", "yue-2---suno-like-music",
+                 "Yue-2---Suno-Like-Music-main")]:
+            app = Path(tmp) / label / new_name
+            (app / "ComfyUI" / "models").mkdir(parents=True)
+            (app / "ComfyUI" / "main.py").write_text("")
+            bootstrap.APP_DIR = app
+            try:
+                old = "C:\\AI\\" + old_name + "\\ComfyUI"
+                moved = dict(bootstrap.DEFAULT_CONFIG, comfy_dir=old,
+                             models_dir=old + "\\models",
+                             python="C:\\gone\\python.exe")
+                notes = bootstrap.heal_paths(moved)
+                s.equal(f"a stale ComfyUI path is rebased onto the {label} app",
+                        moved["comfy_dir"], str(app / "ComfyUI"))
+                s.equal(f"a stale models path follows it ({label})",
+                        moved["models_dir"], str(app / "ComfyUI" / "models"))
+                s.equal(f"a vanished Python path is cleared, not kept ({label})",
+                        moved["python"], "")
+                s.check(f"each repair is reported ({label})", len(notes) == 3)
+            finally:
+                bootstrap.APP_DIR = real_app
+        bootstrap.APP_DIR = app
+        try:
+            blank = dict(bootstrap.DEFAULT_CONFIG)
+            bootstrap.heal_paths(blank)
+            s.equal("an empty config adopts the ComfyUI inside the app",
+                    blank["comfy_dir"], str(app / "ComfyUI"))
+            s.check("a valid config is left alone",
+                    bootstrap.heal_paths(blank) == [])
+            external = dict(bootstrap.DEFAULT_CONFIG, managed=False)
+            bootstrap.verify_locations(external, search=True)
+            s.equal("external mode (no folder of its own) adopts nothing",
+                    external["comfy_dir"], "")
+        finally:
+            bootstrap.APP_DIR = real_app
+
+    # -- the start-up search: finds ComfyUI anywhere, prefers the weights ----
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+
+        def make(rel: str) -> Path:
+            c = root / rel
+            (c / "models").mkdir(parents=True)
+            (c / "main.py").write_text("")
+            (c / "folder_paths.py").write_text("")
+            return c
+        bare = make("a/ComfyUI")
+        rich = make("x/y/z/w/ComfyUI")
+        make("a/ComfyUI/custom_nodes/inner/ComfyUI")   # never walked into
+        (root / "Windows" / "ComfyUI").mkdir(parents=True)
+        (root / "Windows" / "ComfyUI" / "main.py").write_text("")
+        found = bootstrap.find_comfy_installs([root], max_depth=6, budget=10)
+        s.equal("the search finds every ComfyUI, shallowest first",
+                found, [bare, rich])
+        s.equal("the search stops at the depth limit",
+                bootstrap.find_comfy_installs([root], max_depth=3, budget=10),
+                [bare])
+        fake_weights(rich / "models")
+        wcfg = dict(bootstrap.DEFAULT_CONFIG)
+        s.equal("the install holding the YuE2 weights is the one chosen",
+                bootstrap.pick_comfy(found, wcfg), rich)
+        real_find = bootstrap.find_comfy_installs
+        real_detect = bootstrap.detect_comfy_dirs
+        bootstrap.find_comfy_installs = lambda: [bare, rich]
+        # a developer's real ~/ComfyUI must not answer before the search does
+        bootstrap.detect_comfy_dirs = lambda: []
+        try:
+            lost = dict(bootstrap.DEFAULT_CONFIG, comfy_dir=str(root / "gone"))
+            bootstrap.verify_locations(lost)
+            s.equal("a lost ComfyUI is found by the search",
+                    lost["comfy_dir"], str(rich))
+            s.equal("and its models folder with it",
+                    lost["models_dir"], str(rich / "models"))
+            s.check("the report says both check out",
+                    all("not found" not in line
+                        for line in bootstrap.location_report(lost)))
+            quiet = dict(bootstrap.DEFAULT_CONFIG, comfy_dir=str(root / "gone"))
+            bootstrap.verify_locations(quiet, search=False)
+            s.equal("no search when asked not to",
+                    quiet["comfy_dir"], str(root / "gone"))
+        finally:
+            bootstrap.find_comfy_installs = real_find
+            bootstrap.detect_comfy_dirs = real_detect
+
+    # -- while the search runs, the Engine row says so ----------------------
+    lost = dict(bootstrap.DEFAULT_CONFIG, comfy_dir="/nowhere/ComfyUI")
+    row = next(i for i in manager.dependencies(lost, searching=True)
+               if i["id"] == "comfyui")
+    s.check("a ComfyUI being searched for is a warning, not missing",
+            row["state"] == "warn" and row["action"] is None
+            and "Searching" in row["detail"])
+    row = next(i for i in manager.dependencies(lost) if i["id"] == "comfyui")
+    s.check("and once the search is over it is missing, said plainly",
+            row["state"] == "missing"
+            and row["detail"] == "Not found on this computer.")
     return s
 
 
