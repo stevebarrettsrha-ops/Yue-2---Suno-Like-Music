@@ -56,6 +56,12 @@ progress = Progress()
 # Set while a search walks the drives for ComfyUI, so the Engine page says
 # "searching" instead of "missing" and Recheck does not start a second walk.
 locating = threading.Event()
+# When the last search ended. The page re-polls while "searching"; a poll
+# right after a fruitless search must show "not found" (and Install), not
+# start the next walk of the drives — so Recheck searches again only after
+# this rest.
+_search_done = [float("-inf")]
+SEARCH_REST = 30.0
 _locate_lock = threading.Lock()
 
 
@@ -96,12 +102,17 @@ def _heal(search: bool = False) -> None:
         _say(f"Could not verify saved locations: {exc}")
     finally:
         if search:
+            _search_done[0] = time.monotonic()
             locating.clear()
         _locate_lock.release()
 
 
 def _needs_search() -> bool:
     return bootstrap.comfy_lost(cfg)
+
+
+def _rested() -> bool:
+    return time.monotonic() - _search_done[0] > SEARCH_REST
 
 
 _heal()
@@ -1655,7 +1666,7 @@ def api_deps():
     fresh = request.args.get("fresh") == "1"
     if not locating.is_set() and not _search_off():
         _heal()
-        if _needs_search():
+        if _needs_search() and _rested():
             # Recheck with ComfyUI still nowhere: search the drives in the
             # background — the row says "searching" and the page polls.
             locating.set()
