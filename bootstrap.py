@@ -1261,13 +1261,26 @@ def run_setup(cfg: dict, prog: Progress, comfy: ComfyProcess,
         elif cfg["managed"]:
             comfy_dir = Path(cfg["comfy_dir"])
             vpy = venv_python(comfy_dir)
+            # A venv with no pip is a failed first attempt (no python3-venv on
+            # Debian/Ubuntu writes the interpreter, then stops). Installing into
+            # it fails the same way every time, so build it again instead.
+            if vpy.exists() and _run([str(vpy), "-m", "pip",
+                                     "--version"]).returncode != 0:
+                prog.log("The engine's Python environment is incomplete "
+                         "(no pip) — building it again.")
+                shutil.rmtree(comfy_dir.parent / "comfy-venv", ignore_errors=True)
             if not vpy.exists():
                 prog.detail("deps", "Creating virtual environment…")
                 prog.log(f"Creating venv at {vpy.parent.parent / 'comfy-venv'}")
                 res = _run([py, "-m", "venv", str(comfy_dir.parent / "comfy-venv")])
                 if res.returncode != 0:
+                    shutil.rmtree(comfy_dir.parent / "comfy-venv", ignore_errors=True)
                     raise RuntimeError("venv creation failed: " +
-                                       (res.stderr or res.stdout)[-600:])
+                                       (res.stderr or res.stdout)[-600:] +
+                                       (" On Debian/Ubuntu install python3-venv"
+                                        " (sudo apt-get install -y python3-venv),"
+                                        " then run setup again."
+                                        if platform.system() == "Linux" else ""))
             index = cfg.get("torch_index") or _torch_index()
             prog.detail("deps", "Installing PyTorch (this takes a while)…")
             _pip(vpy, ["install", "--upgrade", "pip", "wheel"], prog)
