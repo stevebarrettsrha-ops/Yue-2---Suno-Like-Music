@@ -12,7 +12,15 @@ downloads the model files and starts the engine for you.
 ## Running it
 
 **Windows** — double-click `run.bat`
-**macOS / Linux** — `./run.sh`
+**macOS / Linux** — open a terminal in this folder and run `./run.sh`
+
+On Linux, double-clicking `run.sh` in the file manager opens it in a text
+editor — that is the file manager's choice, not a fault. Right-click it and
+pick **Run as a Program** instead; it opens a terminal and runs there. If a
+terminal answers `Permission denied` (an unzip can drop the executable bit),
+run `bash run.sh`, or `chmod +x run.sh` once. On Debian and Ubuntu the first
+run also needs `sudo apt-get install -y python3-venv`; the script says so when
+it is missing, and picks up where it stopped once it is installed.
 
 Either way the browser opens at <http://127.0.0.1:7788>.
 
