@@ -2,6 +2,36 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
+# Started from the file manager (right-click → Run as a Program) there is no
+# terminal: nothing this script says can be seen, and a failure just looks like
+# nothing happening. On a Linux desktop, open a terminal and run in it instead.
+if [ "$(uname)" = "Linux" ] && [ -z "${YUE_STUDIO_IN_TERMINAL:-}" ] \
+   && [ ! -t 0 ] && [ ! -t 1 ] && [ -n "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ]; then
+  export YUE_STUDIO_IN_TERMINAL=1
+  SELF="$(pwd)/$(basename "$0")"
+  for term in gnome-terminal ptyxis kgx konsole xfce4-terminal mate-terminal \
+              tilix x-terminal-emulator xterm; do
+    command -v "$term" >/dev/null 2>&1 || continue
+    case "$term" in
+      gnome-terminal|ptyxis|kgx) "$term" -- bash "$SELF" && exit 0 ;;
+      xfce4-terminal|mate-terminal) "$term" -x bash "$SELF" && exit 0 ;;
+      *) "$term" -e bash "$SELF" && exit 0 ;;
+    esac
+  done
+  # No terminal found: carry on without one. The page still opens.
+fi
+
+# In a window we opened, keep it open on failure so the reason can be read.
+pause_on_error() {
+  local code=$?
+  if [ -n "${YUE_STUDIO_IN_TERMINAL:-}" ] && [ "$code" -ne 0 ] \
+     && [ "$code" -ne 130 ] && [ -t 0 ]; then
+    printf "\n  YuE Studio stopped (exit code %s). Press Enter to close." "$code"
+    read -r _ || true
+  fi
+}
+trap pause_on_error EXIT
+
 find_python() {
   PY=""
   for cand in python3.13 python3.12 python3.11 python3.10 python3 python; do
@@ -59,14 +89,20 @@ echo "  Using: $("$PY" -c 'import sys;print(sys.executable)')"
 # their Python as externally managed and pip refuses to install into it (PEP
 # 668) — which is exactly the Python the offer above installs — and even where
 # pip would allow it, putting Flask into the system Python is not our business.
+#
+# The check asks for pip, not just a Python: on Debian and Ubuntu without
+# python3-venv, `venv` dies after writing bin/python but before pip, and keeping
+# that half-built folder made every later run fail with "No module named pip"
+# even once the package was installed.
 VENV=".venv"
-if [ -e "$VENV" ] && ! "$VENV/bin/python" -c 'import sys' >/dev/null 2>&1; then
-  echo "  The existing environment no longer runs. Building it again."
+if [ -e "$VENV" ] && ! "$VENV/bin/python" -c 'import pip' >/dev/null 2>&1; then
+  echo "  The existing environment is incomplete or no longer runs. Building it again."
   rm -rf "$VENV"
 fi
 if [ ! -x "$VENV/bin/python" ]; then
   echo "  Setting up YuE Studio's packages (first run only)..."
   if ! "$PY" -m venv "$VENV"; then
+    rm -rf "$VENV"
     echo "  Could not create the environment. On Debian and Ubuntu the venv" >&2
     echo "  module ships separately:  sudo apt-get install -y python3-venv" >&2
     echo "  Install it, then run this again." >&2
@@ -76,4 +112,4 @@ fi
 
 "$VENV/bin/python" -m pip install --disable-pip-version-check --quiet \
     -r requirements.txt
-exec "$VENV/bin/python" server.py
+"$VENV/bin/python" server.py
