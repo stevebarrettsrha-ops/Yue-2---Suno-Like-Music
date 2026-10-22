@@ -274,14 +274,45 @@ def find_python(prog: Progress | None = None) -> str:
     )
 
 
+_ELF = b"\x7fELF"
+_MACHO = (b"\xcf\xfa\xed\xfe", b"\xce\xfa\xed\xfe", b"\xca\xfe\xba\xbe")
+
+
+def foreign_binary(path: Path | str) -> bool:
+    """Is this an executable built for another operating system?
+
+    An app folder on a drive shared between Windows and Linux carries the
+    Windows interpreter (`comfy-venv/Scripts/python.exe`) and the Windows
+    ffmpeg with it. Those files exist, so an existence check trusts them, and
+    every run then fails with `[Errno 8] Exec format error`. The first bytes
+    say which system a binary is for. Anything unreadable or unrecognised
+    counts as native — this only ever rules out what is plainly foreign.
+    """
+    try:
+        with open(path, "rb") as f:
+            head = f.read(4)
+    except OSError:
+        return False
+    system = platform.system()
+    if head[:2] == b"MZ":
+        return system != "Windows"
+    if head == _ELF:
+        return system not in ("Linux", "FreeBSD")
+    if head in _MACHO:
+        return system != "Darwin"
+    return False
+
+
 def find_tool(name: str) -> str:
     """A tool's executable: the copy the app downloaded for itself first, then
     whatever PATH has. The bundled copy wins so that installing from the Engine
     page works immediately — nothing has to be added to PATH and nothing has to
-    be restarted for a process that read PATH at startup."""
+    be restarted for a process that read PATH at startup. A bundled copy built
+    for another system (the Windows download, on a drive now read from Linux)
+    is passed over."""
     bundled = TOOLS_DIR / name / "bin"
     for candidate in (bundled / f"{name}.exe", bundled / name):
-        if candidate.is_file():
+        if candidate.is_file() and not foreign_binary(candidate):
             return str(candidate)
     return shutil.which(name) or ""
 
@@ -408,9 +439,17 @@ def heal_paths(cfg: dict) -> list[str]:
     py = cfg.get("python") or ""
     if py and not Path(py).exists():
         moved = rebase_path(py)
+        if moved and foreign_binary(moved):
+            moved = None
         cfg["python"] = str(moved) if moved else ""
         notes.append(f"Python path {py} is gone"
                      + (f"; using {moved}" if moved else "; cleared"))
+    elif py and foreign_binary(py):
+        # Set up on another system: the file is there and can never run here.
+        cfg["python"] = ""
+        notes.append(f"Python at {py} was built for another operating "
+                     "system; cleared — install PyTorch from the Engine page "
+                     "to build one for this system")
     return notes
 
 
@@ -421,6 +460,7 @@ _SKIP_DIRS = {"windows", "program files", "program files (x86)", "programdata",
               "$recycle.bin", "system volume information", "recovery",
               "node_modules", ".git", "__pycache__", "site-packages", "lib",
               "libs", "scripts", ".cache", ".venv", "venv", "comfy-venv",
+              "comfy-venv-linux", "comfy-venv-darwin", "comfy-venv-windows",
               "python_embeded", "models", "custom_nodes", "output", "input",
               "temp", "proc", "sys", "dev", "snap"}
 
@@ -541,6 +581,12 @@ def verify_locations(cfg: dict, search: bool = True,
         # install's own, found by running it (rule 4). Only on the slow path —
         # it starts processes, and the quick check must stay quick.
         own = existing_python(comfy)
+        if own and cfg.get("managed", True) and _is_app_env(own):
+            # The app's own .venv sits beside a managed ComfyUI, where the
+            # search for "the install's environment" meets it. It has no
+            # torch; running the engine on it only trades a clear "install
+            # PyTorch" for a crash at start.
+            own = ""
         if own:
             cfg["python"] = own
             notes.append(f"Python found at {own}")
@@ -564,10 +610,36 @@ def location_report(cfg: dict) -> list[str]:
         out.append("Models: not found")
     return out
 
-def venv_python(comfy_dir: Path) -> Path:
+def _is_app_env(python: str) -> bool:
+    """Is this interpreter the one YuE Studio itself is running in?"""
+    try:
+        return os.path.samefile(Path(python).parent.parent, sys.prefix)
+    except OSError:
+        return False
+
+
+def venv_dir(comfy_dir: Path) -> Path:
+    """Where the managed engine's virtual environment lives.
+
+    `comfy-venv`, unless that folder holds an environment built on another
+    operating system — an app folder on a drive shared between Windows and
+    Linux. A venv cannot serve both (its `pyvenv.cfg` names one system's
+    Python), and building over it would break it for the other system, so
+    this system gets its own beside it: `comfy-venv-linux` and so on.
+    """
     venv = comfy_dir.parent / "comfy-venv"
-    return venv / ("Scripts/python.exe" if platform.system() == "Windows"
-                   else "bin/python")
+    native, other = (("Scripts/python.exe", "bin/python")
+                     if platform.system() == "Windows"
+                     else ("bin/python", "Scripts/python.exe"))
+    if not (venv / native).exists() and (venv / other).exists():
+        return venv.with_name("comfy-venv-" + platform.system().lower())
+    return venv
+
+
+def venv_python(comfy_dir: Path) -> Path:
+    return venv_dir(comfy_dir) / ("Scripts/python.exe"
+                                  if platform.system() == "Windows"
+                                  else "bin/python")
 
 
 def _interpreters(comfy_dir: Path) -> list[Path]:
@@ -1261,6 +1333,7 @@ def run_setup(cfg: dict, prog: Progress, comfy: ComfyProcess,
         elif cfg["managed"]:
             comfy_dir = Path(cfg["comfy_dir"])
             vpy = venv_python(comfy_dir)
+            vdir = venv_dir(comfy_dir)
             # A venv with no pip is a failed first attempt (no python3-venv on
             # Debian/Ubuntu writes the interpreter, then stops). Installing into
             # it fails the same way every time, so build it again instead.
@@ -1268,13 +1341,13 @@ def run_setup(cfg: dict, prog: Progress, comfy: ComfyProcess,
                                      "--version"]).returncode != 0:
                 prog.log("The engine's Python environment is incomplete "
                          "(no pip) — building it again.")
-                shutil.rmtree(comfy_dir.parent / "comfy-venv", ignore_errors=True)
+                shutil.rmtree(vdir, ignore_errors=True)
             if not vpy.exists():
                 prog.detail("deps", "Creating virtual environment…")
-                prog.log(f"Creating venv at {vpy.parent.parent / 'comfy-venv'}")
-                res = _run([py, "-m", "venv", str(comfy_dir.parent / "comfy-venv")])
+                prog.log(f"Creating venv at {vdir}")
+                res = _run([py, "-m", "venv", str(vdir)])
                 if res.returncode != 0:
-                    shutil.rmtree(comfy_dir.parent / "comfy-venv", ignore_errors=True)
+                    shutil.rmtree(vdir, ignore_errors=True)
                     raise RuntimeError("venv creation failed: " +
                                        (res.stderr or res.stdout)[-600:] +
                                        (" On Debian/Ubuntu install python3-venv"

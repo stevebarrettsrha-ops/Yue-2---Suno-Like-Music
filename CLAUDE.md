@@ -301,6 +301,15 @@ walks, `/api/deps` reports `searching` and the page re-polls. External mode
 `YUE_STUDIO_NO_SEARCH=1` (set by the test harness) turns it all off: test
 configs name made-up folders on purpose.
 
+A saved path can also be *there* and still wrong: an app folder on a drive
+shared by Windows and Linux carries the Windows `comfy-venv/Scripts/python.exe`
+and `data/tools/ffmpeg/bin/ffmpeg.exe`, and every run of them is `[Errno 8]
+Exec format error`. `foreign_binary()` reads the first bytes (MZ, ELF,
+Mach-O); `heal_paths()` clears a foreign interpreter and `find_tool()` passes
+over a foreign bundled tool. The foreign venv is never rebuilt in place — that
+would break it for the other system — so `venv_dir()` gives this one
+`comfy-venv-linux` (or `-windows`, `-darwin`) beside it.
+
 ## Validation gate — run after any edit
 
 ```bash
