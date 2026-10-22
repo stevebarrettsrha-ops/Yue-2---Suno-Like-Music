@@ -30,7 +30,7 @@ import requests
 
 import bootstrap
 from bootstrap import (APP_DIR, MODELS, MODEL_BF16, existing_python,
-                       have_git, venv_python)
+                       have_git, venv_dir, venv_python)
 
 DEFAULT_ENDPOINT = "https://huggingface.co"
 DEFAULT_REPO = "Comfy-Org/YuE2"
@@ -176,8 +176,9 @@ def _which(name: str) -> str:
 
 
 def comfy_python(cfg: dict) -> str:
-    """The interpreter that runs ComfyUI, if we know it."""
-    if cfg.get("python"):
+    """The interpreter that runs ComfyUI, if we know it. One built for another
+    operating system is not known: it can never run here."""
+    if cfg.get("python") and not bootstrap.foreign_binary(cfg["python"]):
         return cfg["python"]
     if cfg.get("comfy_dir"):
         vp = venv_python(Path(cfg["comfy_dir"]))
@@ -300,6 +301,13 @@ def dependencies(cfg: dict, listed: list[str] | None = None,
     torch = _probe_torch(py, fresh)
     torch_detail = torch["detail"]
     torch_action = "install" if torch["state"] != "ok" else "reinstall"
+    if ours and not py and comfy_dir and \
+            venv_dir(comfy_dir).name != "comfy-venv":
+        torch = {"state": "missing"}
+        torch_detail = ("comfy-venv was set up on another operating system "
+                        "and cannot run here. Install builds "
+                        f"{venv_dir(comfy_dir).name} for this one and leaves "
+                        "comfy-venv as it is.")
     if not ours:
         torch_action = None
         if not py:
@@ -315,6 +323,10 @@ def dependencies(cfg: dict, listed: list[str] | None = None,
 
     # ComfyUI requirements
     reqs_state, reqs_detail = "unknown", "Install ComfyUI first."
+    if ours and not py and comfy_dir and (comfy_dir / "main.py").exists():
+        # Nothing to check them with, and so nothing installed for this
+        # system: "missing", which Install everything missing acts on.
+        reqs_state, reqs_detail = "missing", "Install PyTorch first."
     if comfy_dir and (comfy_dir / "requirements.txt").exists() and py:
         try:
             out = subprocess.run(
@@ -561,6 +573,7 @@ def _install_system_package(name: str, task: Task) -> None:
             f"{name} has to be installed by hand on this system — "
             f"'{tool}' is not available. Install {name}, then press Recheck.")
 
+    steps = [(_elevate(cmd, task), optional) for cmd, optional in steps]
     for cmd, optional in steps:
         if optional and not shutil.which(cmd[0]):
             task.log(f"Skipping '{' '.join(cmd)}' — {cmd[0]} is not on PATH "
@@ -572,10 +585,35 @@ def _install_system_package(name: str, task: Task) -> None:
                 task.log(f"'{' '.join(cmd[:3])}' did not finish; a restart of "
                          f"YuE Studio may be needed before it will run.")
                 continue
+            by_hand = " ".join(c for c in cmd if c not in ("-n", "pkexec"))
+            if cmd[0] == "pkexec":
+                by_hand = "sudo " + by_hand
             raise RuntimeError(f"The installer for {name} did not finish. "
-                               "Install it by hand, then press Recheck.")
+                               f"Install it by hand ({by_hand}), then press "
+                               "Recheck.")
     task.set(detail=f"{name} installed. It may need a restart of YuE Studio "
                     "to appear on PATH.")
+
+
+def _elevate(cmd: list[str], task: Task) -> list[str]:
+    """`sudo -n` runs only when sudo needs no password, which on a desktop
+    Ubuntu it almost always does — so the Install button failed for nearly
+    everyone. On a desktop, pkexec asks for the password in a window of its
+    own instead; elsewhere `sudo -n` stays, and its failure names the command
+    to run by hand."""
+    if cmd[:2] != ["sudo", "-n"]:
+        return cmd
+    try:
+        if subprocess.run(["sudo", "-n", "true"], capture_output=True,
+                          timeout=10).returncode == 0:
+            return cmd
+    except Exception:  # noqa: BLE001 - no sudo at all: try pkexec
+        pass
+    desktop = os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY")
+    if desktop and shutil.which("pkexec"):
+        task.log("Asking for your password in a system window…")
+        return ["pkexec"] + cmd[2:]
+    return cmd
 
 
 def _install_comfyui(task: Task, cfg: dict) -> None:
@@ -602,11 +640,18 @@ def _install_torch(task: Task, cfg: dict, opts: dict) -> None:
         raise RuntimeError("Install ComfyUI first.")
     vpy = venv_python(comfy_dir)
     if not vpy.exists():
+        vdir = venv_dir(comfy_dir)
         task.set(detail="Creating the Python environment…")
+        if vdir.name != "comfy-venv":
+            task.log(f"comfy-venv was built on another operating system, so "
+                     f"it is left as it is and this one gets {vdir.name}.")
         base = bootstrap.find_python()
-        if stream([base, "-m", "venv", str(comfy_dir.parent / "comfy-venv")],
-                  task) != 0:
-            raise RuntimeError("Could not create the virtual environment.")
+        if stream([base, "-m", "venv", str(vdir)], task) != 0:
+            raise RuntimeError(
+                "Could not create the virtual environment."
+                + (" On Ubuntu install python3-venv (sudo apt-get install -y "
+                   "python3-venv), then press Install again."
+                   if platform.system() == "Linux" else ""))
     index = (opts.get("torch_index") or cfg.get("torch_index")
              or bootstrap._torch_index())
     cfg["python"] = str(vpy)

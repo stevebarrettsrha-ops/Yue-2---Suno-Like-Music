@@ -1945,6 +1945,13 @@ async function installAllMissing() {
       S.taskId = r.task.id; S.taskCursor = 0; $("taskLog").textContent = "";
       pollTasks();
       const ok = await waitForTask(r.task.id);
+      // Git only fetches and updates ComfyUI; with ComfyUI already here, a
+      // Git that would not install must not hold back PyTorch.
+      if (!ok && id === "git" && !missing.includes("comfyui")) {
+        toast("Git did not install — carrying on, it is only needed to update ComfyUI.", true);
+        await loadDeps();
+        continue;
+      }
       if (!ok) { toast("Stopped at " + labelOf(id) + " — see the activity log.", true); return; }
       await loadDeps();
     }
