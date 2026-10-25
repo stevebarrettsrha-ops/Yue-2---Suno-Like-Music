@@ -642,6 +642,18 @@ class ComfyClient:
         except Exception:
             pass
 
+    def free_memory(self) -> bool:
+        """Ask ComfyUI to drop every model it is holding and give the card's
+        memory back (its own `/free` endpoint). Whatever the last song left
+        resident — the planner, the music model, a model from another
+        workflow — is then not in the way of the next attempt."""
+        try:
+            r = requests.post(f"{self.url}/free", json={
+                "unload_models": True, "free_memory": True}, timeout=30)
+            return r.ok
+        except Exception:
+            return False
+
     @staticmethod
     def _in(state: dict, keys: tuple[str, ...], prompt_id: str) -> bool:
         for key in keys:
@@ -747,6 +759,43 @@ def _gb(n: int) -> str:
     return f"{n / 1e9:.1f} GB"
 
 
+_OOM_SIGNS = ("out of memory", "outofmemoryerror",
+              "would exceed allowed memory", "cuda error: out of memory",
+              "hip out of memory", "mps backend out of memory")
+
+
+def is_out_of_memory(err: str) -> bool:
+    """Did the card run out of memory? PyTorch words it several ways
+    ("CUDA out of memory", "Allocation on device 0 would exceed allowed
+    memory", torch.OutOfMemoryError), and so do the other backends."""
+    low = (err or "").lower()
+    return any(sign in low for sign in _OOM_SIGNS)
+
+
+def explain_out_of_memory(err: str, ckpt: str = "", model_bytes: int = 0,
+                          vram_bytes: int = 0, duration: int = 0,
+                          retried: bool = True) -> str:
+    """The reading for a card that filled up — by default after the retry
+    with the card freed has failed too. The engine's own words are kept in
+    front."""
+    parts = [f"{err} — the graphics card ran out of memory"
+             + (", and freeing it and trying again did not help."
+                if retried else ".")]
+    if model_bytes and vram_bytes and model_bytes > vram_bytes * 0.6:
+        parts.append(f"{ckpt} is {_gb(model_bytes)} on a card with "
+                     f"{_gb(vram_bytes)}, which leaves little room to render; "
+                     "pick the int8 model in the selector at the top of "
+                     "Create — it is the same model, quantised to fit.")
+    if duration > 240:
+        parts.append(f"The song is set to {duration // 60}:{duration % 60:02d}, "
+                     "and the memory a render needs grows with its length; "
+                     "Duration on Auto, or shorter, needs less.")
+    parts.append("Close anything else using the card — another AI app, a "
+                 "game, a browser with many tabs open — and make the song "
+                 "again.")
+    return " ".join(parts)
+
+
 def explain_failure(err: str, ckpt: str = "", model_bytes: int = 0,
                     vram_bytes: int = 0, duration: int = 0,
                     retried: bool = False) -> str:
@@ -760,6 +809,9 @@ def explain_failure(err: str, ckpt: str = "", model_bytes: int = 0,
     text is kept — someone may need the exact wording — and the reading is
     added after it.
     """
+    if is_out_of_memory(err):
+        return explain_out_of_memory(err, ckpt, model_bytes, vram_bytes,
+                                     duration, retried=False)
     low = err.lower()
     if "errno 22" not in low and "invalid argument" not in low:
         return err

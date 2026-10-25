@@ -702,6 +702,38 @@ def run(slow: bool = False) -> Suite:
         finally:
             bootstrap.TOOLS_DIR = real_tools
 
+    # -- Linux keeps room on the card for the desktop -----------------------
+    # The NVIDIA driver on Windows spills into system RAM; Linux stops with
+    # "out of memory" instead, so ComfyUI is told to leave room there.
+    with _patch.object(_platform, "system", return_value="Linux"):
+        s.equal("on Linux ComfyUI is told to keep a gigabyte free",
+                bootstrap.vram_reserve(), 1.0)
+        s.equal("a reserve saved in the config wins", bootstrap.vram_reserve("2.5"), 2.5)
+        s.equal("0 turns it off", bootstrap.vram_reserve(0), 0.0)
+        s.equal("nonsense in the config falls back to the default",
+                bootstrap.vram_reserve("lots"), 1.0)
+        s.equal("a negative reserve is no reserve", bootstrap.vram_reserve(-3), 0.0)
+        seen_cmd = []
+
+        class _Proc:
+            stdout = io.StringIO("")
+            def poll(self): return 0
+            def wait(self, timeout=None): return 0
+
+        with tempfile.TemporaryDirectory() as tmp, \
+                _patch.object(bootstrap.subprocess, "Popen",
+                              side_effect=lambda cmd, **kw: seen_cmd.append(cmd) or _Proc()):
+            (Path(tmp) / "main.py").write_text("")
+            class _P:
+                def log(self, m): pass
+            bootstrap.ComfyProcess().start("python3", Path(tmp), 8199, _P())
+        s.check("the managed engine is launched with --reserve-vram 1",
+                seen_cmd and seen_cmd[0][-2:] == ["--reserve-vram", "1"],
+                seen_cmd)
+    with _patch.object(_platform, "system", return_value="Windows"):
+        s.equal("Windows is left as it was: its driver spills into system RAM",
+                bootstrap.vram_reserve(), 0.0)
+
     # -- the start-up search: finds ComfyUI anywhere, prefers the weights ----
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)

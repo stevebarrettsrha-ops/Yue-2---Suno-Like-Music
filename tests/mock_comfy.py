@@ -63,6 +63,12 @@ def ws_send(obj):
 INTERRUPTS = []
 DELETES = []
 FAILED_NODES = set()
+FREES = []          # every POST /free, so a test can see the card was freed
+OOM_HITS = []       # prompts failed with MOCK_OOM
+# What PyTorch said on an 8 GB card under Linux, word for word.
+OOM_TEXT = ("Allocation on device 0 would exceed allowed memory. (out of "
+            "memory) Currently allocated : 6.20 GiB Requested : 255.98 MiB "
+            "Device limit : 7.62 GiB Free (according to CUDA): 37.19 MiB")
 DELAY = float(__import__("os").environ.get("MOCK_DELAY", "2"))
 
 
@@ -187,6 +193,16 @@ def _execute(pid, graph):
     fail_once = bool(__import__("os").environ.get("MOCK_FAIL_ONCE"))
     should_fail_node = (fail_node and graph_has_fail_node
                         and (not fail_once or fail_node not in FAILED_NODES))
+    oom = __import__("os").environ.get("MOCK_OOM", "")   # "once" | "always"
+    if oom == "always" or (oom == "once" and not OOM_HITS):
+        with LOCK:
+            OOM_HITS.append(pid)
+            QUEUE_RUNNING.remove(pid)
+            HISTORY[pid] = {"status": {"status_str": "error", "messages": [
+                ["execution_error", {"node_type": "KSampler",
+                                     "exception_message": OOM_TEXT}]]},
+                            "outputs": {}}
+        return
     if fail_after or should_fail_node:
         with LOCK:
             if should_fail_node:
@@ -233,6 +249,10 @@ class H(BaseHTTPRequestHandler):
 
     def do_GET(self):
         p = self.path.split("?")[0]
+        if p == "/mock/frees":
+            with LOCK:
+                self._send(200, {"frees": list(FREES), "oom": list(OOM_HITS)})
+            return
         if p == "/ws":
             key = self.headers.get("Sec-WebSocket-Key", "")
             accept = base64.b64encode(hashlib.sha1(
@@ -311,6 +331,10 @@ class H(BaseHTTPRequestHandler):
         elif p == "/interrupt":
             with LOCK:
                 INTERRUPTS.extend(QUEUE_RUNNING)
+            self._send(200, {})
+        elif p == "/free":
+            with LOCK:
+                FREES.append(json.loads(raw) if raw else {})
             self._send(200, {})
         elif p == "/queue":
             body = json.loads(raw) if raw else {}

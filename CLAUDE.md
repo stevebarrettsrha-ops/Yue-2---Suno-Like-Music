@@ -284,6 +284,23 @@
     reports its argv in `/system_stats`, and a bare `main.py` names no folder,
     so our own engine read as one that "does not say where it runs from".
 
+34. **A full card is freed and tried once more, and Linux keeps room on
+    it.** On Windows the NVIDIA driver spills into system RAM when the card
+    is full, so a song that does not fit is slow and still finishes. Linux
+    has no such fallback — the same song stops at KSampler with "Allocation
+    on device 0 would exceed allowed memory" — and the desktop and browser
+    hold a gigabyte of an 8 GB card besides. So on Linux the managed engine
+    is launched with `--reserve-vram` (`vram_reserve()`, 1 GB; a
+    `reserve_vram` number in the config wins, 0 turns it off), which makes
+    ComfyUI keep part of the model in system RAM up front. A song that
+    still runs out (`is_out_of_memory()`) gets one retry: `free_memory()`
+    posts ComfyUI's own `/free` (models unloaded, memory released), the same
+    prompt goes again on the same seed, and the first attempt's error rides
+    on the job card as its `warning` (rule 26: never silently). A second
+    failure is `explain_out_of_memory()`: the engine's words, then the
+    model's size against the card, the song's length, and what else may be
+    on the card.
+
 ## Saved locations are verified, never trusted
 
 The config keeps absolute paths (`comfy_dir`, `models_dir`, `python`), which
