@@ -30,7 +30,8 @@ from bootstrap import (ComfyProcess, Progress, clean_url,
                        comfy_online, comfy_port, detect_comfy_dirs,
                        load_config, save_config)
 from comfy import (ComfyClient, ComfyError, explain_failure,
-                   explain_out_of_memory, is_out_of_memory)
+                   explain_out_of_memory, is_out_of_memory,
+                   requested_bytes)
 
 DATA_DIR = bootstrap.DATA_DIR          # honours YUE_STUDIO_DATA
 TRACKS_DIR = DATA_DIR / "tracks"
@@ -599,6 +600,8 @@ def run_job(job_id: str, params: dict, built: dict | None = None) -> None:
         abc_fallback_used = False
         music_fallback_used = False
         oom_retry_used = False
+        reserve_raised = 0.0
+        reserve_tried = False
         while True:
             time.sleep(1.5)
             # Read the flag under the lock and act outside it: jobs_lock is a
@@ -703,7 +706,7 @@ def run_job(job_id: str, params: dict, built: dict | None = None) -> None:
                     # same seed makes the same song. Said on the job card,
                     # never silent (rule 26).
                     oom_retry_used = True
-                    client.free_memory()
+                    client.free_memory(keep_results=True)
                     set_state(stage="The graphics card ran out of memory — "
                                     "freed it, trying again", pct=6,
                               warning=err)
@@ -713,6 +716,27 @@ def run_job(job_id: str, params: dict, built: dict | None = None) -> None:
                     run_since, moved = 0.0, None
                     unreachable_since = 0.0
                     continue
+                if is_out_of_memory(err) and not reserve_tried:
+                    # Freeing did not help: the render itself needs more than
+                    # the card has beside the model. Restart our engine with
+                    # that much kept free, so ComfyUI holds part of the model
+                    # in system RAM. The song starts over, slower.
+                    reserve_tried = True
+                    reserve_raised = raise_engine_reserve(err, job_id,
+                                                          set_state)
+                    if reserve_raised:
+                        set_state(stage="Rendering again with more of the "
+                                        "card kept free (slower)", pct=6,
+                                  warning=f"{err} — the engine was restarted "
+                                  f"keeping {reserve_raised:g} GB of the card "
+                                  "free, so this render starts over and runs "
+                                  "slower.")
+                        prompt_id = client.queue(built["prompt"])
+                        set_state(prompt_id=prompt_id)
+                        queued_at = started = last_move = time.time()
+                        run_since, moved = 0.0, None
+                        unreachable_since = 0.0
+                        continue
                 if is_out_of_memory(err):
                     client.free_memory()     # do not leave the card full
                     set_state(status="error", stage="Failed",
@@ -720,7 +744,8 @@ def run_job(job_id: str, params: dict, built: dict | None = None) -> None:
                                   err, built["ckpt"],
                                   checkpoint_size(built["ckpt"]),
                                   client.vram_total(),
-                                  int(params.get("duration") or 0)))
+                                  int(params.get("duration") or 0),
+                                  reserve_gb=reserve_raised))
                     return
                 set_state(status="error", stage="Failed",
                           error=explain_failure(
@@ -1191,7 +1216,7 @@ def relocate_engine(reason: str) -> str:
           "and starting the managed ComfyUI there.")
     comfy_proc.start(cfg["python"], Path(cfg["comfy_dir"]), port, progress,
                      Path(cfg["models_dir"]) if cfg.get("models_dir") else None,
-                     cfg.get("reserve_vram"))
+                     _reserve_setting())
     _refresh_schema_when_up()
     return cfg["comfy_url"]
 
@@ -1199,8 +1224,67 @@ def relocate_engine(reason: str) -> str:
 def _start_managed(port: int) -> None:
     comfy_proc.start(cfg["python"], Path(cfg["comfy_dir"]), port, progress,
                      Path(cfg["models_dir"]) if cfg.get("models_dir") else None,
-                     cfg.get("reserve_vram"))
+                     _reserve_setting())
     _refresh_schema_when_up()
+
+
+# A reserve raised for a song that did not fit (raise_engine_reserve). It
+# lasts as long as this YuE Studio runs: kept, a short song after a long one
+# would pay for the long one's headroom on every launch.
+RESERVE_OVERRIDE: float | None = None
+
+
+def _reserve_setting():
+    return RESERVE_OVERRIDE if RESERVE_OVERRIDE is not None \
+        else cfg.get("reserve_vram")
+
+
+def raise_engine_reserve(err: str, job_id: str, say) -> float:
+    """Restart the managed engine keeping room for the allocation that failed.
+
+    ComfyUI decides how much of the model to put on the card when it loads
+    it, and its estimate of what the render will need is short for a long
+    song — a 10:00 song asked KSampler for one 2.4 GB block on a card the
+    model already filled. `--reserve-vram` is the only lever, and it is read
+    at launch, so the engine is restarted with the old reserve plus what was
+    asked for. Returns the new reserve in GB, or 0 when that cannot help or
+    must not be done: an engine we did not start, another song in progress
+    (it would go with the queue), or a reserve already as high as the card
+    allows.
+    """
+    global RESERVE_OVERRIDE
+    if not (comfy_proc.alive() and cfg.get("comfy_dir") and cfg.get("python")):
+        return 0.0
+    with jobs_lock:
+        busy = any(jid != job_id and j.get("status") == "running"
+                   for jid, j in jobs.items())
+    if busy:
+        return 0.0
+    current = bootstrap.vram_reserve(_reserve_setting())
+    need = (requested_bytes(err) / 2**30) or 2.0
+    card = (client.vram_total() / 2**30) or 8.0
+    new = round(min(current + need + 0.5, card * 0.75), 1)
+    if new < current + 0.5:
+        return 0.0
+    say(stage=f"Restarting the engine with {new:g} GB of the card kept free…",
+        pct=6)
+    RESERVE_OVERRIDE = new
+    _note(f"A song needed {need:.1f} GB more than the card had free. "
+          f"Restarting the engine with {new:g} GB kept free for renders.")
+    comfy_proc.stop()
+    try:
+        _start_managed(comfy_port(cfg["comfy_url"]))
+    except RuntimeError as exc:
+        _note(f"The engine did not start again: {exc}")
+        return 0.0
+    deadline = time.time() + 900
+    while time.time() < deadline:
+        if comfy_online(cfg["comfy_url"]) and not engine_starting():
+            return new
+        if not comfy_proc.alive():
+            break
+        time.sleep(2)
+    return 0.0
 
 
 @app.post("/api/comfy/start")

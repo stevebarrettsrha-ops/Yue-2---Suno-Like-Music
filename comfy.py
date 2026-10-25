@@ -24,6 +24,7 @@ from __future__ import annotations
 import json
 import mimetypes
 import random
+import re
 import threading
 import time
 import uuid
@@ -642,14 +643,20 @@ class ComfyClient:
         except Exception:
             pass
 
-    def free_memory(self) -> bool:
+    def free_memory(self, keep_results: bool = False) -> bool:
         """Ask ComfyUI to drop every model it is holding and give the card's
         memory back (its own `/free` endpoint). Whatever the last song left
         resident — the planner, the music model, a model from another
-        workflow — is then not in the way of the next attempt."""
+        workflow — is then not in the way of the next attempt.
+
+        `keep_results` unloads the models only. ComfyUI's `free_memory` flag
+        also empties its cache of finished node outputs, so a retry would
+        redo the whole slow music pass to reach the step that failed; kept,
+        the same prompt picks up at that step."""
         try:
             r = requests.post(f"{self.url}/free", json={
-                "unload_models": True, "free_memory": True}, timeout=30)
+                "unload_models": True, "free_memory": not keep_results},
+                timeout=30)
             return r.ok
         except Exception:
             return False
@@ -772,15 +779,34 @@ def is_out_of_memory(err: str) -> bool:
     return any(sign in low for sign in _OOM_SIGNS)
 
 
+_REQUESTED = re.compile(r"(?:requested\s*:|tried to allocate)\s*"
+                        r"([\d.]+)\s*(gib|mib|gb|mb)", re.I)
+
+
+def requested_bytes(err: str) -> int:
+    """How much the allocation that failed asked for, from PyTorch's own
+    report ("Requested : 2.40 GiB", "Tried to allocate 2.40 GiB"); 0 when
+    the message does not say."""
+    m = _REQUESTED.search(err or "")
+    if not m:
+        return 0
+    unit = {"gib": 2**30, "mib": 2**20, "gb": 10**9, "mb": 10**6}
+    return int(float(m.group(1)) * unit[m.group(2).lower()])
+
+
 def explain_out_of_memory(err: str, ckpt: str = "", model_bytes: int = 0,
                           vram_bytes: int = 0, duration: int = 0,
-                          retried: bool = True) -> str:
+                          retried: bool = True, reserve_gb: float = 0) -> str:
     """The reading for a card that filled up — by default after the retry
     with the card freed has failed too. The engine's own words are kept in
     front."""
     parts = [f"{err} — the graphics card ran out of memory"
              + (", and freeing it and trying again did not help."
                 if retried else ".")]
+    if reserve_gb:
+        parts.append(f"The engine was also restarted keeping {reserve_gb:g} "
+                     "GB of the card free for the render, and it still did "
+                     "not fit.")
     if model_bytes and vram_bytes and model_bytes > vram_bytes * 0.6:
         parts.append(f"{ckpt} is {_gb(model_bytes)} on a card with "
                      f"{_gb(vram_bytes)}, which leaves little room to render; "

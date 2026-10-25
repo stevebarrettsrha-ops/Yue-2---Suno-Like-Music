@@ -889,6 +889,12 @@ class ComfyProcess:
         if self.proc is not proc:
             return                        # already replaced by a restart
         self.exit_code = code
+        if getattr(self, "_stopping", None) is proc:
+            # Stopped on purpose (Restart, a reserve raised for a long song).
+            # What the app did is already in the console; "stopped on its
+            # own" here would read as a crash that never happened.
+            prog.log(f"ComfyUI stopped as asked (code {code}).")
+            return
         if code == 0:
             self.note("ComfyUI exited normally (code 0) without being asked to.")
         else:
@@ -911,6 +917,7 @@ class ComfyProcess:
 
     def stop(self) -> None:
         if self.alive():
+            self._stopping = self.proc
             try:
                 self.proc.terminate()
                 self.proc.wait(timeout=15)

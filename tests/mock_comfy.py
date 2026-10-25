@@ -67,8 +67,8 @@ FREES = []          # every POST /free, so a test can see the card was freed
 OOM_HITS = []       # prompts failed with MOCK_OOM
 # What PyTorch said on an 8 GB card under Linux, word for word.
 OOM_TEXT = ("Allocation on device 0 would exceed allowed memory. (out of "
-            "memory) Currently allocated : 6.20 GiB Requested : 255.98 MiB "
-            "Device limit : 7.62 GiB Free (according to CUDA): 37.19 MiB")
+            "memory) Currently allocated : 4.94 GiB Requested : 2.40 GiB "
+            "Device limit : 7.62 GiB Free (according to CUDA): 59.38 MiB")
 DELAY = float(__import__("os").environ.get("MOCK_DELAY", "2"))
 
 
@@ -193,8 +193,15 @@ def _execute(pid, graph):
     fail_once = bool(__import__("os").environ.get("MOCK_FAIL_ONCE"))
     should_fail_node = (fail_node and graph_has_fail_node
                         and (not fail_once or fail_node not in FAILED_NODES))
-    oom = __import__("os").environ.get("MOCK_OOM", "")   # "once" | "always"
-    if oom == "always" or (oom == "once" and not OOM_HITS):
+    # "once" | "always" | "reserve:N" — the last fails every render unless the
+    # engine was launched with --reserve-vram N or more, the way a song too
+    # long for the card's free room does until ComfyUI keeps room for it.
+    oom = __import__("os").environ.get("MOCK_OOM", "")
+    short_of_room = False
+    if oom.startswith("reserve:"):
+        have = float(__import__("os").environ.get("MOCK_RESERVE") or 0)
+        short_of_room = have < float(oom.split(":", 1)[1])
+    if oom == "always" or short_of_room or (oom == "once" and not OOM_HITS):
         with LOCK:
             OOM_HITS.append(pid)
             QUEUE_RUNNING.remove(pid)

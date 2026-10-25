@@ -196,6 +196,9 @@ def fake_install(root: Path, stale_first_boot: bool = False) -> Path:
         # A real ComfyUI's argv names the main.py it was launched from; the
         # stand-in reads this to answer /system_stats the same way.
         os.environ["MOCK_COMFY_ROOT"] = str(here)
+        # what --reserve-vram it was launched with, for MOCK_OOM=reserve:N
+        if "--reserve-vram" in sys.argv:
+            os.environ["MOCK_RESERVE"] = sys.argv[sys.argv.index("--reserve-vram") + 1]
         flag = here / "stale.flag"
         if flag.exists():
             os.environ["MOCK_BLANK_CKPT_CALLS"] = "999999"

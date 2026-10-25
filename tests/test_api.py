@@ -273,8 +273,9 @@ def run(slow: bool = False) -> Suite:
         s.check("a song that ran the card out of memory is retried and made",
                 job.get("status") == "done" and len(tracks) == 1,
                 job.get("error", job.get("stage", "job vanished")))
-        s.check("the card is freed before the retry, models and all",
-                any(f.get("unload_models") and f.get("free_memory")
+        s.check("the models are unloaded before the retry, and ComfyUI's "
+                "finished results kept so it does not redo the music pass",
+                any(f.get("unload_models") and f.get("free_memory") is False
                     for f in seen["frees"]), seen)
         s.check("the job card says the first attempt ran out of memory",
                 "out of memory" in (job.get("warning") or ""),
