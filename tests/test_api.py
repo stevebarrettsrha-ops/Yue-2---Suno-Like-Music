@@ -257,6 +257,45 @@ def run(slow: bool = False) -> Suite:
                 and not tracks[0].get("abc"),
                 job.get("error", job.get("stage", "job vanished")))
 
+    # -- a full card is freed and the song tried once more -----------------
+    # On Linux there is no spill into system RAM: what was slow on Windows
+    # stops with "Allocation on device 0 would exceed allowed memory". Often
+    # it is the last song's models still resident, which /free gives back.
+    with comfy(delay=1, MOCK_OOM="once") as engine, Workspace() as data, \
+            studio(engine.url, data) as app:
+        made = requests.post(f"{app.url}/api/generate",
+                             json={"style": "folk ballad", "lyrics": "hello"},
+                             timeout=20).json()
+        jobs = finish_jobs(app.url, 40)
+        job = next((j for j in jobs if j["id"] == made["jobs"][0]), {})
+        seen = requests.get(f"{engine.url}/mock/frees", timeout=10).json()
+        tracks = requests.get(f"{app.url}/api/library", timeout=10).json()
+        s.check("a song that ran the card out of memory is retried and made",
+                job.get("status") == "done" and len(tracks) == 1,
+                job.get("error", job.get("stage", "job vanished")))
+        s.check("the card is freed before the retry, models and all",
+                any(f.get("unload_models") and f.get("free_memory")
+                    for f in seen["frees"]), seen)
+        s.check("the job card says the first attempt ran out of memory",
+                "out of memory" in (job.get("warning") or ""),
+                job.get("warning"))
+
+    with comfy(delay=1, MOCK_OOM="always") as engine, Workspace() as data, \
+            studio(engine.url, data) as app:
+        made = requests.post(f"{app.url}/api/generate",
+                             json={"style": "folk ballad", "lyrics": "hello"},
+                             timeout=20).json()
+        jobs = finish_jobs(app.url, 40)
+        job = next((j for j in jobs if j["id"] == made["jobs"][0]), {})
+        seen = requests.get(f"{engine.url}/mock/frees", timeout=10).json()
+        s.check("a card that stays full is tried twice, not for ever",
+                len(seen["oom"]) == 2, seen["oom"])
+        s.check("and the failure says what ran out and what to change",
+                job.get("status") == "error"
+                and "ran out of memory" in (job.get("error") or "")
+                and "Allocation on device 0" in (job.get("error") or ""),
+                (job.get("error") or "")[:200])
+
     # -- the page is told what fits on the card ----------------------------
     # A checkpoint heavier than the card still renders: ComfyUI swaps it in
     # and out for every step. Nothing said so, and the only symptom was a

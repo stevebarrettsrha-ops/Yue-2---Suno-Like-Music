@@ -800,7 +800,8 @@ class ComfyProcess:
         return self.proc is not None and self.proc.poll() is None
 
     def start(self, python: str, comfy_dir: Path, port: int,
-              prog: Progress, models_dir: Path | None = None) -> None:
+              prog: Progress, models_dir: Path | None = None,
+              reserve_vram=None) -> None:
         """Raises RuntimeError with a sentence a person can act on. A ComfyUI
         folder that has moved, or an interpreter that is gone, is an engine
         that cannot start — never a reason the whole app fails to boot."""
@@ -828,6 +829,9 @@ class ComfyProcess:
             if extra:
                 cmd += ["--extra-model-paths-config", str(extra)]
                 prog.log(f"Models folder: {models_dir}")
+        reserve = vram_reserve(reserve_vram)
+        if reserve:
+            cmd += ["--reserve-vram", f"{reserve:g}"]
         prog.log("Launching ComfyUI: " + " ".join(cmd))
         creation = 0
         if platform.system() == "Windows":
@@ -1125,6 +1129,30 @@ def kill_pid(pid: int) -> str:
 # --------------------------------------------------------------------------- #
 # the setup run
 # --------------------------------------------------------------------------- #
+# Video memory kept free for everything else on the card, in GB, on systems
+# whose driver cannot spill over into system RAM.
+LINUX_VRAM_RESERVE = 1.0
+
+
+def vram_reserve(setting=None) -> float:
+    """How much of the card ComfyUI is told to leave alone (`--reserve-vram`).
+
+    On Windows the NVIDIA driver spills into system RAM when the card is
+    full, so a song that does not fit runs slowly and still finishes. Linux
+    has no such fallback: the same song stops with "Allocation on device 0
+    would exceed allowed memory", and on a desktop the compositor and the
+    browser are holding a gigabyte of the card besides. Reserving room makes
+    ComfyUI keep part of the model in system RAM up front instead. A number
+    saved in the config (`reserve_vram`, GB) wins; 0 turns it off.
+    """
+    if setting is not None and setting != "":
+        try:
+            return max(0.0, float(setting))
+        except (TypeError, ValueError):
+            pass
+    return LINUX_VRAM_RESERVE if platform.system() == "Linux" else 0.0
+
+
 def model_paths_file(comfy_dir: Path, models_dir: Path) -> Path | None:
     """Point ComfyUI at a models folder that is not its own, or None if it is.
 
@@ -1401,7 +1429,7 @@ def run_setup(cfg: dict, prog: Progress, comfy: ComfyProcess,
             else:
                 comfy.start(cfg["python"], Path(cfg["comfy_dir"]), port, prog,
                             Path(cfg["models_dir"]) if cfg.get("models_dir")
-                            else None)
+                            else None, cfg.get("reserve_vram"))
                 prog.detail("launch", "Waiting for ComfyUI to come up "
                                       "(first start loads slowly)…")
                 if not wait_for_comfy(url, timeout=900):

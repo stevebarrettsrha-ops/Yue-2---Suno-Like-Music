@@ -13,7 +13,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from comfy import ComfyClient, ComfyError, explain_failure          # noqa: E402
+from comfy import (ComfyClient, ComfyError, explain_failure,      # noqa: E402
+                   explain_out_of_memory, is_out_of_memory)
 from harness import Suite, comfy                   # noqa: E402
 
 
@@ -247,6 +248,45 @@ def run(slow: bool = False) -> Suite:
         s.check("an error that is not this one is passed through untouched",
                 explain_failure("KSampler: something else", "x", 1, 2, 900)
                 == "KSampler: something else")
+
+        # -- a card that filled up is named as such -------------------------
+        # On Linux the driver cannot spill into system RAM the way Windows
+        # does, so a song that only ran slowly there stops with PyTorch's
+        # allocator report — true, and silent about what to do.
+        OOM = ("KSampler: Allocation on device 0 would exceed allowed memory. "
+               "(out of memory) Currently allocated : 6.20 GiB Requested : "
+               "255.98 MiB Device limit : 7.62 GiB")
+        for text in (OOM, "KSampler: CUDA out of memory. Tried to allocate 2 GiB",
+                     "torch.OutOfMemoryError: CUDA error: out of memory",
+                     "HIP out of memory"):
+            s.check(f"{text[:40]!r} is recognised as a full card",
+                    is_out_of_memory(text))
+        for text in ("YuE2GenerateMusic: [Errno 22] Invalid argument",
+                     "KSampler: something else", "", None):
+            s.check(f"{str(text)[:40]!r} is not taken for a full card",
+                    not is_out_of_memory(text))
+        full = explain_out_of_memory(OOM, "yue2_3b_bf16.safetensors",
+                                     int(6.5 * GB), int(8.2 * GB), 300)
+        s.check("after the retry, a full card says so and that freeing it "
+                "did not help", "ran out of memory" in full
+                and "did not help" in full, full[:160])
+        s.check("a heavy model on the card is pointed at int8, with both "
+                "numbers", "int8" in full and "6.5 GB" in full
+                and "8.2 GB" in full, full[:200])
+        s.check("a long song is told the length matters", "5:00" in full)
+        s.check("and other things using the card are named",
+                "another AI app" in full)
+        light = explain_out_of_memory(OOM, "yue2_3b_int8_convrot.safetensors",
+                                      int(3.6 * GB), int(8.2 * GB), 180)
+        s.check("the int8 model is not told to switch to int8",
+                "pick the int8" not in light and "5:00" not in light, light)
+        plan = explain_failure(OOM, "yue2_3b_int8_convrot.safetensors",
+                               int(3.6 * GB), int(8.2 * GB), 180)
+        s.check("explain_failure reads a full card too, without claiming a "
+                "retry it did not make", "ran out of memory" in plan
+                and "did not help" not in plan, plan[:160])
+        s.check("the engine's own words stay in front",
+                full.startswith(OOM) and plan.startswith(OOM))
 
         # -- an unreachable engine must not explode ------------------------
         dead = ComfyClient(f"http://127.0.0.1:{9}")

@@ -29,7 +29,8 @@ import scores
 from bootstrap import (ComfyProcess, Progress, clean_url,
                        comfy_online, comfy_port, detect_comfy_dirs,
                        load_config, save_config)
-from comfy import ComfyClient, ComfyError, explain_failure
+from comfy import (ComfyClient, ComfyError, explain_failure,
+                   explain_out_of_memory, is_out_of_memory)
 
 DATA_DIR = bootstrap.DATA_DIR          # honours YUE_STUDIO_DATA
 TRACKS_DIR = DATA_DIR / "tracks"
@@ -597,6 +598,7 @@ def run_job(job_id: str, params: dict, built: dict | None = None) -> None:
         unreachable_since = 0.0
         abc_fallback_used = False
         music_fallback_used = False
+        oom_retry_used = False
         while True:
             time.sleep(1.5)
             # Read the flag under the lock and act outside it: jobs_lock is a
@@ -694,6 +696,32 @@ def run_job(job_id: str, params: dict, built: dict | None = None) -> None:
                     run_since, moved = 0.0, None
                     unreachable_since = 0.0
                     continue
+                if is_out_of_memory(err) and not oom_retry_used:
+                    # The card filled up. Often that is the last song's models
+                    # still resident, or memory left in pieces; ComfyUI's own
+                    # /free hands it all back, and the same prompt on the
+                    # same seed makes the same song. Said on the job card,
+                    # never silent (rule 26).
+                    oom_retry_used = True
+                    client.free_memory()
+                    set_state(stage="The graphics card ran out of memory — "
+                                    "freed it, trying again", pct=6,
+                              warning=err)
+                    prompt_id = client.queue(built["prompt"])
+                    set_state(prompt_id=prompt_id)
+                    queued_at = started = last_move = time.time()
+                    run_since, moved = 0.0, None
+                    unreachable_since = 0.0
+                    continue
+                if is_out_of_memory(err):
+                    client.free_memory()     # do not leave the card full
+                    set_state(status="error", stage="Failed",
+                              error=explain_out_of_memory(
+                                  err, built["ckpt"],
+                                  checkpoint_size(built["ckpt"]),
+                                  client.vram_total(),
+                                  int(params.get("duration") or 0)))
+                    return
                 set_state(status="error", stage="Failed",
                           error=explain_failure(
                               err, built["ckpt"],
@@ -1162,14 +1190,16 @@ def relocate_engine(reason: str) -> str:
     _note(f"{old_url} is not usable — {reason}. Moving to port {port} "
           "and starting the managed ComfyUI there.")
     comfy_proc.start(cfg["python"], Path(cfg["comfy_dir"]), port, progress,
-                     Path(cfg["models_dir"]) if cfg.get("models_dir") else None)
+                     Path(cfg["models_dir"]) if cfg.get("models_dir") else None,
+                     cfg.get("reserve_vram"))
     _refresh_schema_when_up()
     return cfg["comfy_url"]
 
 
 def _start_managed(port: int) -> None:
     comfy_proc.start(cfg["python"], Path(cfg["comfy_dir"]), port, progress,
-                     Path(cfg["models_dir"]) if cfg.get("models_dir") else None)
+                     Path(cfg["models_dir"]) if cfg.get("models_dir") else None,
+                     cfg.get("reserve_vram"))
     _refresh_schema_when_up()
 
 
