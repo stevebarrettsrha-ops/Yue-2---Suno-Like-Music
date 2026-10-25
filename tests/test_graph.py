@@ -14,7 +14,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from comfy import (ComfyClient, ComfyError, explain_failure,      # noqa: E402
-                   explain_out_of_memory, is_out_of_memory)
+                   explain_out_of_memory, is_out_of_memory,
+                   requested_bytes)
 from harness import Suite, comfy                   # noqa: E402
 
 
@@ -287,6 +288,19 @@ def run(slow: bool = False) -> Suite:
                 and "did not help" not in plan, plan[:160])
         s.check("the engine's own words stay in front",
                 full.startswith(OOM) and plan.startswith(OOM))
+        raised = explain_out_of_memory(OOM, "yue2_3b_int8_convrot.safetensors",
+                                       int(3.6 * GB), int(8.2 * GB), 600,
+                                       reserve_gb=3.9)
+        s.check("when even the restart with room kept free failed, it says so",
+                "3.9 GB" in raised and "still did not fit" in raised
+                and "10:00" in raised, raised)
+        s.check("how much was asked for is read off PyTorch's report",
+                abs(requested_bytes("KSampler: ... Requested : 2.40 GiB "
+                                    "Device limit : 7.62 GiB") / 2**30 - 2.4)
+                < 0.01
+                and requested_bytes("CUDA out of memory. Tried to allocate "
+                                    "512.00 MiB") == 512 * 2**20
+                and requested_bytes("no number here") == 0)
 
         # -- an unreachable engine must not explode ------------------------
         dead = ComfyClient(f"http://127.0.0.1:{9}")

@@ -23,8 +23,8 @@ sys.path.insert(0, str(HERE.parent))
 import bootstrap  # noqa: E402  (the app's own, for reading pids off a port)
 import manager  # noqa: E402
 from harness import (Suite, Workspace, comfy, fake_install,  # noqa: E402
-                     fake_weights, free_port, port_squatter, studio,
-                     supervised_comfy, wait_for)
+                     fake_weights, finish_jobs, free_port, port_squatter,
+                     studio, supervised_comfy, wait_for)
 
 
 def status(app_url: str) -> dict:
@@ -407,6 +407,56 @@ def run(slow: bool = False) -> Suite:
                 s.check("and the process is still theirs to run",
                         theirs.proc.poll() is None
                         and not status(app.url)["comfy_running_managed"])
+
+
+    # -- a song too long for the card's free room gets the room ------------
+    # Freeing the card does not help a render that itself needs more than the
+    # card has beside the model (a 10:00 song asked KSampler for 2.4 GB with
+    # the model already holding 5). Only a launch with --reserve-vram makes
+    # ComfyUI keep that room, so the managed engine is restarted with it.
+    # The stand-in fails every render until it is launched with 3 GB kept.
+    if bootstrap.platform.system() == "Linux":
+        with Workspace() as ws:
+            install = fake_install(ws)
+            url = f"http://127.0.0.1:{free_port()}"
+            os.environ["MOCK_OOM"] = "reserve:3"
+            try:
+                app = studio(url, ws / "data", comfy_dir=str(install),
+                             models_dir=str(install / "models"),
+                             python=sys.executable)
+                app.__enter__()
+            finally:
+                os.environ.pop("MOCK_OOM", None)
+            try:
+                requests.post(f"{app.url}/api/comfy/start", timeout=60)
+                s.check("the managed engine comes up for the long song",
+                        wait_for(lambda: status(app.url)["comfy_online"]
+                                 and status(app.url).get("ready"), 60))
+                made = requests.post(
+                    f"{app.url}/api/generate",
+                    json={"style": "epic", "lyrics": "a long song",
+                          "duration": 600}, timeout=20).json()
+                jobs = finish_jobs(app.url, 150)
+                job = next((j for j in jobs if j["id"] == made["jobs"][0]), {})
+                lines = engine_log(app.url, 400)["lines"]
+                s.check("after freeing fails, the engine is restarted with "
+                        "room for what was asked, and the song is made",
+                        job.get("status") == "done",
+                        job.get("error", job.get("stage", "job vanished")))
+                # The stand-in only renders once launched with 3 GB or more
+                # kept free, so "done" above already proves the flag reached
+                # it; the console says how much and why.
+                s.check("the restart keeps the old reserve plus the 2.4 GB "
+                        "asked for, plus a margin, and the console says so",
+                        any("3.9 GB kept free" in line for line in lines),
+                        [l for l in lines if "YuE Studio" in l][-3:])
+                s.check("the job card says the engine was restarted and the "
+                        "render is slower",
+                        "3.9 GB" in (job.get("warning") or "")
+                        and "slower" in (job.get("warning") or ""),
+                        job.get("warning"))
+            finally:
+                app.__exit__(None, None, None)
 
     return s
 

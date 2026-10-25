@@ -293,13 +293,27 @@
     is launched with `--reserve-vram` (`vram_reserve()`, 1 GB; a
     `reserve_vram` number in the config wins, 0 turns it off), which makes
     ComfyUI keep part of the model in system RAM up front. A song that
-    still runs out (`is_out_of_memory()`) gets one retry: `free_memory()`
-    posts ComfyUI's own `/free` (models unloaded, memory released), the same
-    prompt goes again on the same seed, and the first attempt's error rides
-    on the job card as its `warning` (rule 26: never silently). A second
-    failure is `explain_out_of_memory()`: the engine's words, then the
-    model's size against the card, the song's length, and what else may be
-    on the card.
+    still runs out (`is_out_of_memory()`) gets one retry: `free_memory(
+    keep_results=True)` posts ComfyUI's own `/free` with models unloaded but
+    *not* its `free_memory` flag, which would also empty the cache of
+    finished node outputs and make the retry redo the whole slow music pass.
+    The same prompt goes again on the same seed, and the first attempt's
+    error rides on the job card as its `warning` (rule 26: never silently).
+    Freeing cannot help a render that itself needs more than the card has
+    beside the model — a 10:00 song asked KSampler for one 2.4 GB block with
+    the model holding 5 — so a second failure goes to
+    `raise_engine_reserve()`: our own engine is restarted with the old
+    reserve plus what PyTorch said it asked for (`requested_bytes()`) plus
+    0.5 GB, capped at three quarters of the card, and the song starts over,
+    slower, with the job card saying so. Never for an engine we did not
+    start, never while another song is in progress (it would go with the
+    queue), and the raised reserve (`RESERVE_OVERRIDE`) lasts only while this
+    YuE Studio runs, so short songs do not pay for one long one for ever. A
+    failure after that is `explain_out_of_memory()`: the engine's words,
+    then the restart already tried, the model's size against the card, the
+    song's length, and what else may be on the card. `ComfyProcess.stop()`
+    marks the process it stopped, so a planned stop is not reported in the
+    console as "stopped on its own".
 
 ## Saved locations are verified, never trusted
 
